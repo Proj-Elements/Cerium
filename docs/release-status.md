@@ -1,7 +1,7 @@
 # Release Status
 
 Updated on 2026-11-04 (Asia/Shanghai) for `codex/backend-maintenance`.
-Local Docker deployment is verified; publication and remote CI remain blocked.
+Local Docker deployment is verified; no publication or remote CI was performed.
 
 ## Local Commits
 
@@ -69,7 +69,11 @@ Compose project. Verification completed at 02:03:43 on 2026-11-04
   this item once focused missing/invalid-field tests return 400 without changing
   data. Business code was not changed as part of this deployment.
 
-## Publication Blockers
+## Publication Follow-up
+
+These unresolved items retain the 2026-11-03 publication audit. Remote CI
+configuration and retained checkpoint contents were not re-audited during the
+local Docker rollout; this deployment does not establish remote release readiness.
 
 - TODO (checkpoint privacy): obtain approval for a supported code-only push or
   an explicitly authorized cleanup of the outgoing Entire checkpoints. Local
@@ -81,9 +85,9 @@ Compose project. Verification completed at 02:03:43 on 2026-11-04
   rotated separately by their owner.
 - TODO (remote CI): select and connect the intended CI service or runner, then
   run the documented checks against the exact pushed head. The Entire checks
-  API currently reports `configured: false`, with no plugins or checks; the
-  repository also reports `runners_enabled: false`. No GitHub mirror or CI
-  workflow exists in this project. Remove this item after the configured remote
+  API reported `configured: false`, with no plugins or checks; the
+  repository also reported `runners_enabled: false`. No GitHub mirror or CI
+  workflow was configured in this project. Remove this item after the configured remote
   run completes and its result is verified for the release commit.
 
 As of this update, local Docker deployment has completed, but no code push,
