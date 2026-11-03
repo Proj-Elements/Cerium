@@ -13,6 +13,13 @@ RUN pip install --no-cache-dir -r requirements.txt \
     && python -m patchright install --with-deps chromium \
     && chmod -R a+rX /opt/browsers \
     && useradd --create-home --uid 10002 solver
+# Ten rapid upstream polls can end before a real widget finishes. Keep polling
+# within runner.py's existing 70-second deadline; fail the build on source drift.
+RUN python -c 'from pathlib import Path; \
+    path = Path("upstream/api_solver.py"); source = path.read_text(); \
+    needle = "for _ in range(10):"; \
+    assert source.count(needle) == 1, "upstream polling loop changed"; \
+    path.write_text(source.replace(needle, "for _ in range(120):"))'
 COPY runner.py ./
 USER solver
 HEALTHCHECK --interval=30s --timeout=3s --start-period=15s \
