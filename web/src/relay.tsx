@@ -134,7 +134,9 @@ export function GroupBadge({
           <PlatformIcon family={family} key={family} />
         ))}
       </span>
-      <span className="badge-name">{group.name}</span>
+      <span className="badge-name" title={group.name}>
+        {group.name}
+      </span>
       <span className="group-rate">{rateLabel(group)}</span>
     </>
   );
@@ -143,6 +145,7 @@ export function GroupBadge({
       size="sm"
       variant="secondary"
       className={`group-badge tone-${groupTone(group)}`}
+      data-group-id={group.id}
       aria-pressed={selected}
       onPress={onPress}
     >

@@ -12,8 +12,10 @@ import {
 import { api, APIError, message } from "./api";
 import { Empty, Field, Glyph, Header, n, Select, when } from "./ui";
 import { SiteDetails } from "./Catalog";
-import { GroupBadge, lowestRate, Provider, SiteIcon, Status } from "./relay";
+import { lowestRate, Provider, SiteIcon, Status } from "./relay";
+import { GroupPreview } from "./GroupPreview";
 import { ChangeList } from "./Changes";
+import { AdminSettings } from "./AdminSettings";
 import closeIcon from "./assets/figma-close.svg";
 import type { ChangeNotice, Directory, Site } from "./types";
 
@@ -162,9 +164,9 @@ function Editor({
                   <div>
                     <strong>站点图标，自动发现</strong>
                     <p>
-                      保存后自动读取站点图标，获取失败时使用{" "}
+                      独立发现并保存图标地址，后续同步不重新获取；失败时使用{" "}
                       {value.type === "sub2api" ? "Sub2API" : "NewAPI"}{" "}
-                      默认图标，无需手动维护。
+                      默认图标。修改站点 URL 后才重新发现。
                     </p>
                   </div>
                 </div>
@@ -384,6 +386,7 @@ export default function Admin() {
   const [interval, setIntervalValue] = useState(900);
   const [editing, setEditing] = useState<Site | "new" | null>(null);
   const [deleting, setDeleting] = useState<Site | null>(null);
+  const [settingsOpen, setSettingsOpen] = useState(false);
   const [preview, setPreview] = useState<{
     site: Site;
     groupId?: string;
@@ -542,10 +545,19 @@ export default function Admin() {
                   让收录、同步与每一次倍率变化，都井然有序。
                 </p>
               </div>
-              <Button onPress={() => setEditing("new")}>
-                <Glyph name="plus" size={16} />
-                添加站点
-              </Button>
+              <div className="admin-primary-actions">
+                <Button
+                  variant="secondary"
+                  onPress={() => setSettingsOpen(true)}
+                >
+                  <Glyph name="sliders" size={16} />
+                  同步与数据
+                </Button>
+                <Button onPress={() => setEditing("new")}>
+                  <Glyph name="plus" size={16} />
+                  添加站点
+                </Button>
+              </div>
             </section>
             <div className="admin-metrics">
               <div>
@@ -575,8 +587,8 @@ export default function Admin() {
               <div>
                 <span>同步周期</span>
                 <strong>
-                  {Math.round(interval / 60)}
-                  <small>分钟</small>
+                  {interval % 60 === 0 ? interval / 60 : interval}
+                  <small>{interval % 60 === 0 ? "分钟" : "秒"}</small>
                 </strong>
               </div>
             </div>
@@ -646,8 +658,14 @@ export default function Admin() {
                 </div>
                 {filtered.length ? (
                   <div className="admin-list">
-                    {filtered.map((site) => (
-                      <Card key={site.id} className="admin-site">
+                    {filtered.map((site, index) => (
+                      <Card
+                        key={site.id}
+                        className="admin-site"
+                        style={{
+                          animationDelay: `${Math.min(index, 5) * 40}ms`,
+                        }}
+                      >
                         <Card.Header className="admin-site-main">
                           <SiteIcon site={site} />
                           <div className="admin-site-info">
@@ -711,31 +729,13 @@ export default function Admin() {
                           </div>
                         </Card.Header>
                         <Card.Content className="admin-site-content">
-                          <div className="admin-group-preview">
-                            {(site.catalog?.groups ?? [])
-                              .slice(0, 5)
-                              .map((group) => (
-                                <GroupBadge
-                                  key={group.id}
-                                  group={group}
-                                  onPress={() =>
-                                    setPreview({ site, groupId: group.id })
-                                  }
-                                />
-                              ))}
-                            {!site.catalog?.groups.length && (
-                              <span className="muted">等待公开分组快照</span>
-                            )}
-                            {(site.catalog?.groups.length ?? 0) > 5 && (
-                              <Button
-                                variant="ghost"
-                                size="sm"
-                                onPress={() => setPreview({ site })}
-                              >
-                                +{site.catalog!.groups.length - 5} 个分组
-                              </Button>
-                            )}
-                          </div>
+                          <GroupPreview
+                            groups={site.catalog?.groups ?? []}
+                            onGroup={(group) =>
+                              setPreview({ site, groupId: group.id })
+                            }
+                            onMore={() => setPreview({ site })}
+                          />
                           <div className="admin-site-detail">
                             <span>
                               最低{" "}
@@ -826,6 +826,7 @@ export default function Admin() {
                 </div>
                 <ChangeList
                   changes={changes}
+                  sites={sites}
                   busy={busy}
                   onVisibility={(change) =>
                     action(
@@ -850,6 +851,19 @@ export default function Admin() {
           </>
         )}
       </main>
+      {settingsOpen && authed && (
+        <AdminSettings
+          base={base}
+          interval={interval}
+          siteCount={sites.length}
+          close={() => setSettingsOpen(false)}
+          unauthorized={() => setAuthed(false)}
+          saved={async (text) => {
+            setNotice(text);
+            await load();
+          }}
+        />
+      )}
       {editing && (
         <Editor
           site={editing === "new" ? undefined : editing}

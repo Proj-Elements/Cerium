@@ -1,6 +1,8 @@
 import { Button, Chip, Modal } from "@heroui/react";
+import { Timeline } from "@heroui-pro/react/timeline";
 import { Empty, Glyph, n, when } from "./ui";
-import type { ChangeNotice, GroupChange } from "./types";
+import { SiteIcon } from "./relay";
+import type { ChangeNotice, GroupChange, Site } from "./types";
 import closeIcon from "./assets/figma-close.svg";
 
 function value(rate: number | null, dynamic: boolean) {
@@ -56,11 +58,13 @@ export function ChangeDetail({ change }: { change: GroupChange }) {
 }
 export function ChangeList({
   changes,
+  sites,
   onSite,
   onVisibility,
   busy = false,
 }: {
   changes: ChangeNotice[];
+  sites: Site[];
   onSite?: (id: string) => void;
   onVisibility?: (notice: ChangeNotice) => void;
   busy?: boolean;
@@ -72,17 +76,30 @@ export function ChangeList({
         description="有新的分组增删或倍率调整时，变动会自动记录在这里。首次同步仅建立基准，不触发通报。"
       />
     );
+  const sitesById = new Map(sites.map((site) => [site.id, site]));
   return (
-    <div className="change-list">
-      {changes.map((notice) => (
-        <article
+    <Timeline className="change-list" size="md" density="comfortable">
+      {changes.map((notice, index) => (
+        <Timeline.Item
           className={`change-item ${notice.dismissed ? "is-dismissed" : ""}`}
           key={notice.id}
+          status={notice.dismissed ? "muted" : "current"}
+          style={{ animationDelay: `${Math.min(index, 5) * 35}ms` }}
         >
-          <span className="timeline-dot">
-            <Glyph name="activity" size={16} />
-          </span>
-          <div className="change-item-content">
+          <Timeline.Rail>
+            <Timeline.Marker
+              className="timeline-dot"
+              status={notice.dismissed ? "muted" : "current"}
+            >
+              {sitesById.has(notice.site_id) ? (
+                <SiteIcon site={sitesById.get(notice.site_id)!} />
+              ) : (
+                <span aria-hidden="true">{notice.site_name.slice(0, 1)}</span>
+              )}
+            </Timeline.Marker>
+            <Timeline.Connector />
+          </Timeline.Rail>
+          <Timeline.Content className="change-item-content">
             <div className="change-item-heading">
               {onSite ? (
                 <Button
@@ -91,7 +108,7 @@ export function ChangeList({
                   className="change-site-button"
                   onPress={() => onSite(notice.site_id)}
                 >
-                  {notice.site_name}
+                  <span className="change-site-name">{notice.site_name}</span>
                   <Glyph name="arrow-up-right" size={13} />
                 </Button>
               ) : (
@@ -132,18 +149,20 @@ export function ChangeList({
                 </Button>
               </div>
             )}
-          </div>
-        </article>
+          </Timeline.Content>
+        </Timeline.Item>
       ))}
-    </div>
+    </Timeline>
   );
 }
 export function ChangesDialog({
   changes,
+  sites,
   close,
   onSite,
 }: {
   changes: ChangeNotice[];
+  sites: Site[];
   close: () => void;
   onSite: (id: string) => void;
 }) {
@@ -171,7 +190,7 @@ export function ChangesDialog({
               </p>
             </Modal.Header>
             <Modal.Body>
-              <ChangeList changes={changes} onSite={onSite} />
+              <ChangeList changes={changes} sites={sites} onSite={onSite} />
             </Modal.Body>
             <Modal.Footer>
               <span className="field-help">分组倍率不等同于模型最终单价。</span>

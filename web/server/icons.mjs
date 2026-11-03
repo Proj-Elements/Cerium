@@ -2,6 +2,14 @@ import { lookup } from "node:dns/promises";
 import { BlockList, isIP } from "node:net";
 import { request as httpRequest } from "node:http";
 import { request as httpsRequest } from "node:https";
+import { favicon, HttpError } from "./validation.mjs";
+
+const requestURL = (url, options, callback) =>
+  (url.protocol === "https:" ? httpsRequest : httpRequest)(
+    url,
+    options,
+    callback,
+  );
 
 const globalIPv6 = new BlockList();
 globalIPv6.addSubnet("2000::", 3, "ipv6");
@@ -40,7 +48,8 @@ export function isPublicAddress(address) {
   return false;
 }
 
-async function publicTarget(value) {
+async function publicTarget(value, deadline, lookupAddress) {
+  deadline.throwIfAborted();
   const url = new URL(value);
   if (
     !["https:", "http:"].includes(url.protocol) ||
@@ -50,7 +59,20 @@ async function publicTarget(value) {
   )
     throw new Error("Unsafe icon origin");
   const hostname = url.hostname.replace(/^\[|\]$/g, "");
-  const addresses = await lookup(hostname, { all: true });
+  let abort;
+  const expired = new Promise((_, reject) => {
+    abort = () => reject(deadline.reason);
+    deadline.addEventListener("abort", abort, { once: true });
+  });
+  let addresses;
+  try {
+    addresses = await Promise.race([
+      lookupAddress(hostname, { all: true }),
+      expired,
+    ]);
+  } finally {
+    deadline.removeEventListener("abort", abort);
+  }
   if (
     !addresses.length ||
     addresses.some(({ address }) => !isPublicAddress(address))
@@ -59,11 +81,21 @@ async function publicTarget(value) {
   return { url, address: addresses[0] };
 }
 
-async function readPage(target, deadline, redirects = 0) {
+async function readResource(
+  target,
+  deadline,
+  transport,
+  icon = false,
+  redirects = 0,
+) {
   const { url, address } = target;
   // Pin the validated address so DNS rebinding cannot turn discovery into SSRF.
   return new Promise((resolve, reject) => {
-    const request = (url.protocol === "https:" ? httpsRequest : httpRequest)(
+    let discarding = false;
+    const onError = (error) => {
+      if (!discarding) reject(error);
+    };
+    const request = transport.request(
       url,
       {
         signal: deadline,
@@ -71,42 +103,69 @@ async function readPage(target, deadline, redirects = 0) {
           if (options.all) callback(null, [address]);
           else callback(null, address.address, address.family);
         },
-        headers: { Accept: "text/html", "User-Agent": "Cerium-Icon/1.0" },
+        headers: {
+          Accept: icon ? "image/*,application/octet-stream;q=0.8" : "text/html",
+          "User-Agent": "Cerium-Icon/1.0",
+        },
       },
       (response) => {
+        response.on("error", onError);
+        response.on("aborted", () =>
+          onError(new Error("Response interrupted")),
+        );
         if ([301, 302, 303, 307, 308].includes(response.statusCode)) {
-          response.resume();
+          // Cancelling a redirect body must not reject the followed request.
+          discarding = true;
+          response.destroy();
           if (redirects >= 2 || !response.headers.location)
             return reject(new Error("Too many redirects"));
-          publicTarget(new URL(response.headers.location, url)).then(
+          let next;
+          try {
+            next = new URL(response.headers.location, url);
+            if (icon && next.origin !== url.origin)
+              throw new Error("Icon redirects must remain same-origin");
+          } catch (error) {
+            return reject(error);
+          }
+          publicTarget(next, deadline, transport.lookup).then(
             (next) =>
-              readPage(next, deadline, redirects + 1).then(resolve, reject),
+              readResource(next, deadline, transport, icon, redirects + 1).then(
+                resolve,
+                reject,
+              ),
             reject,
           );
           return;
         }
+        const type = (response.headers["content-type"] ?? "")
+          .split(";")[0]
+          .trim()
+          .toLowerCase();
         if (
           response.statusCode !== 200 ||
-          !/text\/html/i.test(response.headers["content-type"] ?? "")
+          (icon
+            ? !/^image\//.test(type) && type !== "application/octet-stream"
+            : type !== "text/html")
         ) {
-          response.resume();
-          return resolve({ html: "", url });
+          discarding = true;
+          response.destroy();
+          return resolve({ body: Buffer.alloc(0), url, type });
         }
         const chunks = [];
         let length = 0;
+        const limit = icon ? 1 << 20 : 256 << 10;
         response.on("data", (chunk) => {
           length += chunk.length;
-          if (length > 256 * 1024)
-            response.destroy(new Error("Homepage too large"));
+          if (length > limit)
+            response.destroy(new Error("Icon discovery response too large"));
           else chunks.push(chunk);
         });
-        response.on("error", reject);
         response.on("end", () =>
-          resolve({ html: Buffer.concat(chunks).toString("utf8"), url }),
+          resolve({ body: Buffer.concat(chunks), url, type }),
         );
       },
     );
-    request.on("error", reject);
+    request.on("error", onError);
     request.end();
   });
 }
@@ -130,7 +189,13 @@ export function findIcons(html, base) {
     try {
       const url = new URL(attrs.href.replace(/&amp;/g, "&"), base);
       // Keep discovery same-origin; never hand visitors arbitrary tracking URLs.
-      if (url.origin === new URL(base).origin && !url.username && !url.password)
+      url.hash = "";
+      if (
+        url.origin === new URL(base).origin &&
+        !url.username &&
+        !url.password &&
+        url.href.length <= 2048
+      )
         icons.push(url.href);
     } catch {
       /* Ignore malformed link elements. */
@@ -139,37 +204,127 @@ export function findIcons(html, base) {
   return [...new Set(icons)].slice(0, 4);
 }
 
-export function createIconResolver() {
-  const cache = new Map();
+function isIcon(body, type) {
+  if (type === "image/svg+xml")
+    return /<svg(?:\s|>)/i.test(body.toString("utf8", 0, 4096));
+  return (
+    body.subarray(0, 8).equals(Buffer.from("89504e470d0a1a0a", "hex")) ||
+    (body.length > 6 &&
+      body.readUInt32LE(0) === 0x10000 &&
+      body.readUInt16LE(4) > 0) ||
+    /^GIF8[79]a$/.test(body.toString("ascii", 0, 6)) ||
+    (body[0] === 0xff && body[1] === 0xd8 && body[2] === 0xff) ||
+    (body.toString("ascii", 0, 4) === "RIFF" &&
+      body.toString("ascii", 8, 12) === "WEBP") ||
+    (body.toString("ascii", 4, 8) === "ftyp" &&
+      /avif|avis/.test(body.toString("ascii", 8, 32))) ||
+    body.toString("ascii", 0, 2) === "BM"
+  );
+}
+
+export function createIconResolver(options = {}) {
+  const transport = {
+    lookup: options.lookup ?? lookup,
+    request: options.request ?? requestURL,
+  };
   return async (site) => {
-    const key = site.url;
-    if (cache.get(key)?.until > Date.now()) return cache.get(key).promise;
-    const promise = (async () => {
+    try {
+      const pageDeadline = AbortSignal.timeout(4500),
+        target = await publicTarget(site.url, pageDeadline, transport.lookup);
+      let page;
       try {
-        const target = await publicTarget(site.url);
-        let page;
-        try {
-          page = await readPage(target, AbortSignal.timeout(4500));
-        } catch {
-          page = { html: "", url: target.url };
-        }
-        const base = page.url.href;
-        return {
-          icons: [
-            ...new Set([
-              ...findIcons(page.html, base),
-              new URL("favicon.ico", base).href,
-              new URL("logo.svg", base).href,
-              new URL("/favicon.ico", base).href,
-            ]),
-          ],
-        };
+        page = await readResource(target, pageDeadline, transport);
       } catch {
-        return { icons: [] };
+        page = { body: Buffer.alloc(0), url: target.url };
       }
-    })();
-    if (cache.size >= 250) cache.delete(cache.keys().next().value);
-    cache.set(key, { until: Date.now() + 3600000, promise });
-    return promise;
+      const base = page.url.href,
+        directory = new URL(base);
+      if (
+        !directory.pathname.endsWith("/") &&
+        !/\.[^/]+$/.test(directory.pathname)
+      )
+        directory.pathname += "/";
+      const icons = [
+        ...new Set([
+          ...findIcons(page.body.toString("utf8"), base),
+          ...[
+            "favicon.ico",
+            "favicon.svg",
+            "favicon.png",
+            "apple-touch-icon.png",
+            "/favicon.ico",
+            "/favicon.svg",
+            "/favicon.png",
+            "/apple-touch-icon.png",
+          ].map((path) => new URL(path, directory).href),
+        ]),
+      ].filter((candidate) => candidate.length <= 2048);
+      const probeDeadline = AbortSignal.timeout(4500);
+      for (const candidate of icons) {
+        if (probeDeadline.aborted) break;
+        const deadline = AbortSignal.any([
+          probeDeadline,
+          AbortSignal.timeout(1250),
+        ]);
+        try {
+          const target = await publicTarget(
+              candidate,
+              deadline,
+              transport.lookup,
+            ),
+            image = await readResource(target, deadline, transport, true);
+          if (isIcon(image.body, image.type))
+            return { icons, selected: candidate };
+        } catch {
+          /* Try the next candidate without changing an already saved icon. */
+        }
+      }
+      return { icons, selected: "" };
+    } catch {
+      return { icons: [], selected: "" };
+    }
+  };
+}
+
+export function createPersistentIconResolver(
+  store,
+  discover = createIconResolver(),
+) {
+  const pending = new Map();
+  const result = (state) => ({ icons: state.selected ? [state.selected] : [] });
+  return async (id) => {
+    for (let attempt = 0; attempt < 3; attempt++) {
+      const row = store.row(id),
+        config = row && JSON.parse(row.config);
+      if (!config?.enabled) throw new HttpError(404, "Site not found");
+      if (row.favicon !== null) return result(JSON.parse(row.favicon));
+      const key = `${id}:${row.revision}`;
+      let promise = pending.get(key);
+      if (!promise) {
+        promise = Promise.resolve()
+          .then(() =>
+            config.icon
+              ? { icons: [config.icon], selected: config.icon }
+              : discover({ url: config.url }),
+          )
+          .then((value) =>
+            favicon(
+              {
+                url: config.url,
+                icons: value.icons,
+                selected: value.selected ?? value.icons[0] ?? "",
+              },
+              config.url,
+            ),
+          )
+          .catch(() => ({ url: config.url, icons: [], selected: "" }))
+          .finally(() => pending.delete(key));
+        pending.set(key, promise);
+      }
+      const state = await promise;
+      // A delayed discovery must not overwrite edited, imported or deleted sites.
+      if (store.saveFavicon(id, row.revision, state)) return result(state);
+    }
+    throw new HttpError(409, "Site changed during icon discovery; try again");
   };
 }

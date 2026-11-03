@@ -10,9 +10,15 @@ import { readFileSync } from "node:fs";
 import { join, resolve, extname } from "node:path";
 import { fileURLToPath } from "node:url";
 import { Store } from "./store.mjs";
-import { HttpError } from "./validation.mjs";
+import { HttpError, syncInterval } from "./validation.mjs";
 import { parseOrigin, validOrigin } from "./origin.mjs";
-import { createIconResolver } from "./icons.mjs";
+import { createPersistentIconResolver } from "./icons.mjs";
+import {
+  BACKUP_LIMIT,
+  backupFormat,
+  parseBackup,
+  serializeBackup,
+} from "./backup.mjs";
 
 export const sign = (secret, timestamp, body) =>
   "sha256=" +
@@ -37,8 +43,7 @@ export function createApp(options = {}) {
   const interval = Number(
     options.interval ?? process.env.SYNC_INTERVAL_SECONDS ?? 900,
   );
-  if (!Number.isInteger(interval) || interval < 60)
-    throw new Error("SYNC_INTERVAL_SECONDS must be an integer >= 60");
+  syncInterval(interval);
   const store = new Store(
     options.dbPath ??
       join(process.env.DATA_DIR ?? join(root, "data"), "cerium-web.db"),
@@ -70,7 +75,7 @@ export function createApp(options = {}) {
   )
     throw new Error("Invalid backend URL");
   const base = `${store.adminPath}/api`;
-  const resolveIcon = options.resolveIcon ?? createIconResolver();
+  const resolveIcon = createPersistentIconResolver(store, options.resolveIcon);
   let busy = false,
     stopped = false,
     timer,
@@ -85,14 +90,25 @@ export function createApp(options = {}) {
     res.writeHead(code, { "Content-Type": "application/json; charset=utf-8" });
     res.end(JSON.stringify(data));
   };
-  async function body(req, limit = 1 << 20) {
-    if (!req.headers["content-type"]?.startsWith("application/json"))
-      throw new HttpError(415, "Expected application/json");
+  async function body(req, limit = 1 << 20, types = ["application/json"]) {
+    const type = req.headers["content-type"]
+      ?.split(";")[0]
+      .trim()
+      .toLowerCase();
+    if (!types.includes(type))
+      throw new HttpError(415, `Expected ${types.join(" or ")}`);
+    if (Number(req.headers["content-length"]) > limit) {
+      req.resume();
+      throw new HttpError(413, "Request too large");
+    }
     const chunks = [];
     let size = 0;
-    for await (const chunk of req) {
+    for await (const chunk of req.iterator({ destroyOnReturn: false })) {
       size += chunk.length;
-      if (size > limit) throw new HttpError(413, "Request too large");
+      if (size > limit) {
+        req.resume();
+        throw new HttpError(413, "Request too large");
+      }
       chunks.push(chunk);
     }
     return Buffer.concat(chunks);
@@ -173,7 +189,8 @@ export function createApp(options = {}) {
       "default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' https: http: data:; font-src 'self'; connect-src 'self'; object-src 'none'; base-uri 'none'; frame-ancestors 'none'; form-action 'self'",
     );
     try {
-      const path = new URL(req.url, "http://localhost").pathname;
+      const target = new URL(req.url, "http://localhost"),
+        path = target.pathname;
       const method = req.method;
       if (path === "/healthz" && method === "GET")
         return send(res, 200, { ok: true });
@@ -181,15 +198,11 @@ export function createApp(options = {}) {
         return send(res, 200, {
           sites: store.sites(),
           changes: store.changes(),
-          interval,
+          interval: store.interval,
         });
       const iconMatch = path.match(/^\/api\/sites\/([\da-f-]{36})\/icon$/);
       if (iconMatch && method === "GET") {
-        const row = store.row(iconMatch[1]);
-        const config = row && JSON.parse(row.config);
-        if (!config || !config.enabled)
-          throw new HttpError(404, "Site not found");
-        return send(res, 200, await resolveIcon(config));
+        return send(res, 200, await resolveIcon(iconMatch[1]));
       }
       if (path === "/api/webhooks/sync" && method === "POST") {
         const raw = await body(req, 8 << 20),
@@ -245,11 +258,53 @@ export function createApp(options = {}) {
           res.setHeader("Set-Cookie", cookie("", 0));
           return send(res, 200, { ok: true });
         }
+        if (path === `${base}/settings` && method === "GET")
+          return send(res, 200, { sync_interval_seconds: store.interval });
+        if (path === `${base}/settings` && method === "PUT")
+          return send(res, 200, {
+            sync_interval_seconds: store.setInterval(
+              json(await body(req, 4096))?.sync_interval_seconds,
+            ),
+          });
+        if (path === `${base}/data/export` && method === "POST") {
+          const format = backupFormat(
+              target.searchParams.get("format") ?? "json",
+            ),
+            bytes = await serializeBackup(store, format),
+            stamp = new Date().toISOString().replace(/[-:]|\.\d{3}/g, "");
+          res.writeHead(200, {
+            "Content-Type":
+              format === "json"
+                ? "application/json; charset=utf-8"
+                : "application/vnd.sqlite3",
+            "Content-Disposition": `attachment; filename="cerium-web-${stamp}.${format === "json" ? "json" : "db"}"`,
+            "Content-Length": bytes.length,
+          });
+          res.end(bytes);
+          return;
+        }
+        if (path === `${base}/data/import` && method === "POST") {
+          const format = backupFormat(
+              target.searchParams.get("format") ?? "json",
+            ),
+            mode = target.searchParams.get("mode") ?? "merge";
+          if (!["merge", "replace"].includes(mode))
+            throw new HttpError(400, "Import mode must be merge or replace");
+          const raw = await body(
+              req,
+              BACKUP_LIMIT,
+              format === "json"
+                ? ["application/json"]
+                : ["application/vnd.sqlite3", "application/octet-stream"],
+            ),
+            data = parseBackup(raw, format, store.interval);
+          return send(res, 200, store.importData(data, mode));
+        }
         if (path === `${base}/sites` && method === "GET")
           return send(res, 200, {
             sites: store.sites(true),
             changes: store.changes(true),
-            interval,
+            interval: store.interval,
           });
         const changeMatch = path
           .slice(base.length)

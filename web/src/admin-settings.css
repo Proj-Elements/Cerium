@@ -1,0 +1,92 @@
+.admin-primary-actions {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  flex-shrink: 0;
+}
+.admin-settings-dialog .modal__body,
+.sync-settings-form,
+.backup-settings,
+.backup-import {
+  display: flex;
+  flex-direction: column;
+  align-items: stretch;
+  gap: 16px;
+}
+.admin-settings-dialog .modal__header {
+  padding-bottom: 24px;
+}
+.admin-settings-dialog .form-section-title {
+  margin: 0;
+}
+.sync-settings-form > .button,
+.backup-settings > .button,
+.backup-import > .button {
+  align-self: flex-start;
+}
+.sync-settings-controls {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) minmax(100px, 0.6fr);
+  gap: 16px;
+}
+.admin-settings-dialog .label,
+.backup-import > label,
+.admin-settings-dialog .select-field > label {
+  font-size: 13px;
+  font-weight: 600;
+}
+.backup-settings {
+  margin-top: 16px;
+}
+.backup-settings .select-field .relay-select {
+  width: 100%;
+}
+.backup-sensitive {
+  color: var(--warning-soft-foreground);
+  background: var(--warning-soft);
+  padding: 12px 16px;
+  border-radius: var(--radius);
+  font-size: 13px;
+}
+.backup-import {
+  margin-top: 8px;
+}
+.backup-import > input[type="file"] {
+  width: 100%;
+  min-width: 0;
+  padding: 12px;
+  color: var(--foreground);
+  background: var(--surface-secondary);
+  border-radius: var(--radius);
+}
+.backup-import > input[type="file"]::file-selector-button {
+  margin-right: 12px;
+  padding: 6px 12px;
+  color: var(--foreground);
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  font: inherit;
+  cursor: var(--cursor-interactive);
+}
+.backup-confirm {
+  display: flex;
+  align-items: flex-start;
+  gap: 12px;
+}
+.backup-confirm input {
+  margin-top: 5px;
+  accent-color: var(--accent);
+}
+@media (max-width: 640px) {
+  .admin-primary-actions {
+    align-items: stretch;
+    flex-direction: column;
+    gap: 8px;
+  }
+  .admin-primary-actions .button {
+    padding-inline: 12px;
+    font-size: 12px;
+    white-space: nowrap;
+  }
+}

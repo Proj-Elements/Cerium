@@ -122,9 +122,6 @@ export function Header({
       </a>
       {!admin && (
         <nav className="header-nav" aria-label="主导航">
-          <a href="#directory" className="active">
-            站点目录
-          </a>
           <Button variant="ghost" size="sm" onPress={onChanges}>
             倍率动态
             <Glyph name="activity" size={14} />

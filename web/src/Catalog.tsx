@@ -1,5 +1,13 @@
 import { useEffect, useMemo, useRef, useState } from "react";
-import { Button, Card, Input, Modal, TextField } from "@heroui/react";
+import {
+  Button,
+  Card,
+  Input,
+  Modal,
+  ScrollShadow,
+  Skeleton,
+  TextField,
+} from "@heroui/react";
 import { api, message } from "./api";
 import { Empty, Glyph, Header, IconButton, n, Select, when } from "./ui";
 import {
@@ -92,7 +100,7 @@ function Models({ group, type }: { group: Group; type: string }) {
         {!group.models_known && <span>列表可能不完整</span>}
       </div>
       {matches.length ? (
-        <div className="price-table-wrap">
+        <ScrollShadow className="price-table-wrap" size={24}>
           <table className="price-table">
             <thead>
               <tr>
@@ -134,7 +142,7 @@ function Models({ group, type }: { group: Group; type: string }) {
               })}
             </tbody>
           </table>
-        </div>
+        </ScrollShadow>
       ) : (
         <Empty
           title={query ? "没有匹配的模型" : "模型列表暂未公开"}
@@ -199,12 +207,25 @@ export function SiteDetails({
   const [range, setRange] = useState<RateRange>(null);
   const [query, setQuery] = useState("");
   const backButton = useRef<HTMLButtonElement>(null);
+  const detailSheet = useRef<HTMLElement>(null);
   const groups = site.catalog?.groups ?? [];
   const filtered = groups.filter((item) =>
     matchesGroup(item, family, range, query),
   );
   const group = filtered.find((item) => item.id === selected);
   const minimum = lowestRate(site);
+  const returnToGroups = () => {
+    const id = selected;
+    setSelected(null);
+    requestAnimationFrame(() => {
+      const badge = [
+        ...(detailSheet.current?.querySelectorAll<HTMLButtonElement>(
+          ".group-badge",
+        ) ?? []),
+      ].find((button) => button.dataset.groupId === id);
+      badge?.focus({ preventScroll: true });
+    });
+  };
   useEffect(() => {
     if (group && window.matchMedia("(orientation: portrait)").matches)
       backButton.current?.focus();
@@ -225,7 +246,11 @@ export function SiteDetails({
             className={`detail-workspace ${group ? "has-models" : ""}`}
             aria-label={`${site.name}详情`}
           >
-            <section className="detail-sheet" aria-label="站点与分组">
+            <section
+              className="detail-sheet"
+              aria-label="站点与分组"
+              ref={detailSheet}
+            >
               <Modal.CloseTrigger aria-label="关闭站点详情">
                 <img src={closeIcon} alt="" width="16" height="16" />
               </Modal.CloseTrigger>
@@ -248,64 +273,66 @@ export function SiteDetails({
                 </div>
               </Modal.Header>
               <Modal.Body>
-                <div className="detail-facts">
-                  <div>
-                    <span>最低分组倍率</span>
-                    <strong className="accent">
-                      {minimum == null ? (
-                        "待确认"
-                      ) : (
-                        <>
-                          {n(minimum)}
-                          <small>×</small>
-                        </>
+                <div className="detail-overview">
+                  <div className="detail-facts">
+                    <div>
+                      <span>最低分组倍率</span>
+                      <strong className="accent">
+                        {minimum == null ? (
+                          "待确认"
+                        ) : (
+                          <>
+                            {n(minimum)}
+                            <small>×</small>
+                          </>
+                        )}
+                      </strong>
+                    </div>
+                    <div>
+                      <span>充值兑换</span>
+                      <strong>
+                        {site.recharge_cny == null ? (
+                          "未提供"
+                        ) : (
+                          <>
+                            {n(site.recharge_cny)}
+                            <small> CNY</small> = {n(site.recharge_usd)}
+                            <small> USD</small>
+                          </>
+                        )}
+                      </strong>
+                    </div>
+                    <div>
+                      <span>充值倍率</span>
+                      <strong>
+                        {site.recharge_multiplier == null
+                          ? "未提供"
+                          : `${n(site.recharge_multiplier)}×`}
+                      </strong>
+                    </div>
+                  </div>
+                  {(site.payment_methods.length > 0 || site.payment_note) && (
+                    <div className="detail-payments">
+                      <Glyph name="credit-card" size={16} />
+                      <span>
+                        {site.payment_methods.join(" / ") || "充值方式未提供"}
+                      </span>
+                      {site.payment_note && (
+                        <span className="muted">{site.payment_note}</span>
                       )}
-                    </strong>
-                  </div>
-                  <div>
-                    <span>充值兑换</span>
-                    <strong>
-                      {site.recharge_cny == null ? (
-                        "未提供"
-                      ) : (
-                        <>
-                          {n(site.recharge_cny)}
-                          <small> CNY</small> = {n(site.recharge_usd)}
-                          <small> USD</small>
-                        </>
-                      )}
-                    </strong>
-                  </div>
-                  <div>
-                    <span>充值倍率</span>
-                    <strong>
-                      {site.recharge_multiplier == null
-                        ? "未提供"
-                        : `${n(site.recharge_multiplier)}×`}
-                    </strong>
-                  </div>
+                    </div>
+                  )}
+                  {site.status !== "ok" && site.status !== "manual" && (
+                    <div className="notice subtle">
+                      <Glyph name="info" size={16} />
+                      <span>
+                        {site.catalog
+                          ? "暂时保留最近一次成功快照，当前数据可能已经变化。"
+                          : "正在等待首次成功同步，暂时没有可展示的分组。"}
+                      </span>
+                    </div>
+                  )}
                 </div>
-                {(site.payment_methods.length > 0 || site.payment_note) && (
-                  <div className="detail-payments">
-                    <Glyph name="credit-card" size={16} />
-                    <span>
-                      {site.payment_methods.join(" / ") || "充值方式未提供"}
-                    </span>
-                    {site.payment_note && (
-                      <span className="muted">{site.payment_note}</span>
-                    )}
-                  </div>
-                )}
-                {site.status !== "ok" && site.status !== "manual" && (
-                  <div className="notice subtle">
-                    <Glyph name="info" size={16} />
-                    <span>
-                      {site.catalog
-                        ? "暂时保留最近一次成功快照，当前数据可能已经变化。"
-                        : "正在等待首次成功同步，暂时没有可展示的分组。"}
-                    </span>
-                  </div>
-                )}
                 <section className="group-section">
                   <div className="section-heading">
                     <div>
@@ -410,7 +437,7 @@ export function SiteDetails({
                     ref={backButton}
                     size="sm"
                     variant="ghost"
-                    onPress={() => setSelected(null)}
+                    onPress={returnToGroups}
                   >
                     <Glyph name="arrow-left" size={15} />
                     返回分组
@@ -742,10 +769,10 @@ export default function CatalogPage() {
             >
               {[0, 1, 2, 3].map((key) => (
                 <div key={key} className="skeleton-card">
-                  <span />
-                  <i />
-                  <i />
-                  <b />
+                  <Skeleton className="skeleton-avatar" />
+                  <Skeleton className="skeleton-line" />
+                  <Skeleton className="skeleton-line skeleton-line-short" />
+                  <Skeleton className="skeleton-meta" />
                 </div>
               ))}
             </div>
@@ -798,6 +825,7 @@ export default function CatalogPage() {
       {showChanges && (
         <ChangesDialog
           changes={changes}
+          sites={sites}
           close={() => setShowChanges(false)}
           onSite={(id) => {
             setShowChanges(false);
