@@ -601,17 +601,28 @@ export class Store {
     if (!result.changes) throw new HttpError(404, "Change not found");
   }
   sites(admin = false) {
+    const interval = this.interval,
+      now = Date.now();
     return this.db
-      .prepare("SELECT * FROM sites ORDER BY rowid")
+      .prepare(
+        `SELECT s.*,j.state AS job_state,j.attempts AS job_attempts,j.error AS job_error
+         FROM sites s LEFT JOIN jobs j ON j.id=(
+           SELECT id FROM jobs WHERE site_id=s.id AND revision=s.revision AND state IN ('pending','running')
+           ORDER BY created_at DESC,rowid DESC LIMIT 1)
+         ORDER BY s.rowid`,
+      )
       .all()
       .flatMap((row) => {
         const c = JSON.parse(row.config);
         if (!admin && !c.enabled) return [];
-        const job = this.db
-          .prepare(
-            "SELECT state,attempts,error FROM jobs WHERE site_id=? AND revision=? AND state IN ('pending','running') ORDER BY created_at DESC LIMIT 1",
-          )
-          .get(row.id, row.revision);
+        const job =
+          row.job_state === null
+            ? undefined
+            : {
+                state: row.job_state,
+                attempts: row.job_attempts,
+                error: row.job_error,
+              };
         const {
           password,
           account,
@@ -639,8 +650,7 @@ export class Store {
                       : "pending"
                     : !row.snapshot
                       ? "waiting"
-                      : Date.now() - Date.parse(row.fetched_at) >
-                          this.interval * 3000
+                      : now - Date.parse(row.fetched_at) > interval * 3000
                         ? "stale"
                         : "ok",
             ...(admin

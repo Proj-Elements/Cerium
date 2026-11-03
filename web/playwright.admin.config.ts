@@ -15,5 +15,6 @@ export default defineConfig({
     url: "http://127.0.0.1:4185/healthz",
     timeout: 30000,
     reuseExistingServer: false,
+    gracefulShutdown: { signal: "SIGTERM", timeout: 10000 },
   },
 });

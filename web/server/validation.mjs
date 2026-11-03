@@ -90,6 +90,8 @@ export function favicon(input, siteURL) {
 export function catalog(input, scope = "public") {
   if (
     !input ||
+    typeof input !== "object" ||
+    Array.isArray(input) ||
     input.scope !== scope ||
     !Array.isArray(input.groups) ||
     input.groups.length > 500
@@ -99,6 +101,8 @@ export function catalog(input, scope = "public") {
   return {
     scope,
     groups: input.groups.map((g) => {
+      if (!g || typeof g !== "object" || Array.isArray(g))
+        fail("Invalid catalog group");
       const id = text(g.id, 200, true);
       if (ids.has(id)) fail("Duplicate group");
       ids.add(id);
@@ -127,24 +131,31 @@ export function catalog(input, scope = "public") {
             ? g.models_fetched_at
             : "",
         models: [...new Set((g.models ?? []).map((m) => text(m, 300, true)))],
-        prices: (g.prices ?? []).map((p) => ({
-          model: text(p.model, 300, true),
-          mode: ["tokens", "request", "dynamic", "unknown"].includes(p.mode)
-            ? p.mode
-            : "unknown",
-          input: number(p.input),
-          output: number(p.output),
-          cache_read: number(p.cache_read),
-          cache_write: number(p.cache_write),
-          request: number(p.request),
-          expression: text(p.expression ?? "", 16000),
-        })),
+        prices: (g.prices ?? []).map((p) => {
+          if (!p || typeof p !== "object" || Array.isArray(p))
+            fail("Invalid model price");
+          return {
+            model: text(p.model, 300, true),
+            mode: ["tokens", "request", "dynamic", "unknown"].includes(p.mode)
+              ? p.mode
+              : "unknown",
+            input: number(p.input),
+            output: number(p.output),
+            cache_read: number(p.cache_read),
+            cache_write: number(p.cache_write),
+            request: number(p.request),
+            expression: text(p.expression ?? "", 16000),
+          };
+        }),
       };
     }),
   };
 }
 export function site(input, previous) {
-  if (!input || typeof input !== "object") fail("Invalid site");
+  if (!input || typeof input !== "object" || Array.isArray(input))
+    fail("Invalid site");
+  if (input.enabled !== undefined && typeof input.enabled !== "boolean")
+    fail("Site visibility must be a boolean");
   if (
     input.monitor_changes != null &&
     typeof input.monitor_changes !== "boolean"

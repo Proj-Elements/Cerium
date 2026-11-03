@@ -376,10 +376,15 @@ console.log(
   `Fixture ready at http://127.0.0.1:${port}; real Go bridge verified`,
 );
 async function close() {
+  // Playwright signals the Go child too; register before draining HTTP requests.
+  const workerExited =
+    worker.exitCode !== null || worker.signalCode !== null
+      ? Promise.resolve()
+      : once(worker, "exit");
   clearInterval(timer);
   await app.close();
   worker.kill("SIGTERM");
-  await once(worker, "exit");
+  await workerExited;
   upstream.close();
   rmSync(dir, { recursive: true, force: true });
   process.exit(0);

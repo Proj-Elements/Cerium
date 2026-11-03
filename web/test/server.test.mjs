@@ -314,6 +314,26 @@ test("signed callbacks, stale revisions, replay idempotency and last-good snapsh
     ).status,
     400,
   );
+  for (const groups of [
+    [null],
+    [{ id: "default", name: "Default", prices: [null] }],
+  ]) {
+    const before = f.store.row(id);
+    assert.equal(
+      (
+        await publish({
+          ...result(job),
+          catalog: { scope: "public", groups },
+        })
+      ).status,
+      400,
+    );
+    assert.deepEqual(f.store.row(id), before);
+    assert.equal(
+      f.store.db.prepare("SELECT state FROM jobs WHERE id=?").get(job.id).state,
+      "running",
+    );
+  }
   assert.equal((await publish(result(job))).status, 200);
   assert.equal((await publish(result(job))).status, 200);
   const original = f.store.row(id).snapshot;
@@ -531,4 +551,64 @@ test("legacy password configs remain editable without discarding their snapshot"
   f.store.save({ ...config, password: "", description: "Updated" }, id);
   assert.notEqual(f.store.row(id).snapshot, null);
   assert.equal(JSON.parse(f.store.row(id).config).password, config.password);
+});
+
+test("non-object JSON bodies return 400 without mutating persisted state", async (t) => {
+  const f = await fixture(t);
+  for (const value of [null, [], true, "invalid"]) {
+    const response = await f.request(f.base + "/login", "POST", value);
+    assert.equal(response.status, 400, `login body: ${JSON.stringify(value)}`);
+  }
+  await f.login();
+  const id = f.store.save(config),
+    before = f.store.row(id);
+  for (const [path, method] of [
+    [f.base + "/sites", "POST"],
+    [`${f.base}/sites/${id}`, "PUT"],
+    [f.base + "/settings", "PUT"],
+    [`${f.base}/changes/${id}/visibility`, "POST"],
+  ]) {
+    for (const value of [null, [], true, "invalid"]) {
+      const response = await f.request(path, method, value);
+      assert.equal(response.status, 400, `${method} ${path}`);
+      assert.equal(typeof (await response.json()).error, "string");
+    }
+  }
+  for (const value of [null, [], true, "invalid"]) {
+    const timestamp = String(Math.floor(Date.now() / 1000)),
+      raw = JSON.stringify(value),
+      response = await f.request("/api/webhooks/sync", "POST", value, {
+        "X-Cerium-Timestamp": timestamp,
+        "X-Cerium-Signature": sign(secret, timestamp, raw),
+        "X-Cerium-Event": "sync.completed",
+      });
+    assert.equal(response.status, 400, `callback body: ${raw}`);
+  }
+  assert.deepEqual(f.store.row(id), before);
+  assert.equal(f.store.sites(true).length, 1);
+  assert.equal((await f.request("/healthz")).status, 200);
+});
+
+test("invalid manual catalogs and visibility never publish a partially saved site", async (t) => {
+  const f = await fixture(t);
+  await f.login();
+  const id = f.store.save(config),
+    before = f.store.row(id);
+  for (const change of [
+    { enabled: "false" },
+    { type: "others", manual_catalog: { groups: [null] } },
+    {
+      type: "others",
+      manual_catalog: {
+        groups: [{ id: "g", name: "Group", prices: [null] }],
+      },
+    },
+  ]) {
+    const response = await f.request(`${f.base}/sites/${id}`, "PUT", {
+      ...config,
+      ...change,
+    });
+    assert.equal(response.status, 400);
+    assert.deepEqual(f.store.row(id), before);
+  }
 });

@@ -114,11 +114,15 @@ export function createApp(options = {}) {
     return Buffer.concat(chunks);
   }
   function json(buffer) {
+    let value;
     try {
-      return JSON.parse(buffer);
+      value = JSON.parse(buffer);
     } catch {
       throw new HttpError(400, "Invalid JSON");
     }
+    if (value === null || typeof value !== "object" || Array.isArray(value))
+      throw new HttpError(400, "Expected a JSON object");
+    return value;
   }
   function csrf(req) {
     if (
