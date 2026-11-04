@@ -1,7 +1,8 @@
 # Release Status
 
-Updated on 2026-11-04 (Asia/Shanghai) for `codex/backend-maintenance`.
-Local Docker deployment is verified; no publication or remote CI was performed.
+Updated on 2026-11-04 (Asia/Shanghai). The Docker sections describe the earlier
+`codex/backend-maintenance` rollout; the branch-integration status is recorded
+separately below. No remote CI or new deployment is implied by integration checks.
 
 ## Local Commits
 
@@ -71,25 +72,48 @@ Compose project. Verification completed at 02:03:43 on 2026-11-04
 
 ## Publication Follow-up
 
-These unresolved items retain the 2026-11-03 publication audit. Remote CI
-configuration and retained checkpoint contents were not re-audited during the
-local Docker rollout; this deployment does not establish remote release readiness.
+The 2026-11-03 publication audit found unredacted token strings in retained
+sessions; the Docker rollout did not re-audit that history. On 2026-11-04 the
+owner explicitly authorized uploading project session logs to the existing
+private organization repository, without deleting checkpoints or changing
+visibility. All seven retained checkpoint refs now match the configured Entire
+remote. This resolves the sharing-scope approval, not the historical redaction
+limitations; no credentials were rotated and no token values are reproduced here.
 
-- TODO (checkpoint privacy): obtain approval for a supported code-only push or
-  an explicitly authorized cleanup of the outgoing Entire checkpoints. Local
-  transcript inspection found unredacted provider-token strings in retained
-  history, including earlier sessions. No matched values are reproduced here.
-  Do not publish that history based only on automatic redaction metadata, and
-  do not bypass Git hooks. Remove this item after the approved push scope is
-  enforced and verified. The affected initialization credentials should be
-  rotated separately by their owner.
-- TODO (remote CI): select and connect the intended CI service or runner, then
-  run the documented checks against the exact pushed head. The Entire checks
-  API reported `configured: false`, with no plugins or checks; the
-  repository also reported `runners_enabled: false`. No GitHub mirror or CI
-  workflow was configured in this project. Remove this item after the configured remote
-  run completes and its result is verified for the release commit.
+- TODO (remote CI): publish the integration candidate to the private GitHub
+  repository `Proj-Elements/Cerium` and observe its exact-SHA push and PR checks.
+  GitHub Actions is enabled and focused API/data and Solver checks are now in
+  `.github/workflows/ci.yml`. Current GitHub DNS/connection failures block code
+  synchronization and remote validation. Remove this item after the configured
+  runs complete and their results are verified. The earlier Entire checks API
+  reported `configured: false` and `runners_enabled: false`; no protection or
+  runner settings have been changed to bypass gates.
+- TODO (premium frontend CI): configure an authorized HeroUI setup secret before
+  adding cache-free frontend builds and browser checks to GitHub CI. The current
+  remote workflow intentionally covers dependency-free Node regressions and the
+  Solver image only. Remove this item when an isolated secret-aware build and
+  the affected browser checks pass remotely, without exposing setup credentials
+  to untrusted pull requests.
 
-As of this update, local Docker deployment has completed, but no code push,
-checkpoint upload, remote CI execution, or release publication has been
-performed for these commits. Branch protection has not been modified.
+## Branch Integration
+
+The initial checkout had no staged, unstaged or untracked source changes. Its
+only local work branch, `codex/backend-maintenance` at `0047a93`, contains six
+commits beyond `main` at `f85a035`. Their application source is retained unchanged
+on the isolated `codex/main-integration` worktree; the added changes are focused
+GitHub CI and this status update. No version tag or deployment is requested.
+
+Fresh focused verification passes: 55 Node 24 tests in an offline non-root
+container, two polling tests in a source-equivalent Solver image, five public
+and three admin Playwright tests, the existing frontend TypeScript/Vite build,
+seven CI-selector tests, real-diff selection, and workflow formatting. These are
+local checks, not remote CI. Browser fixture databases are cleaned up; production
+data, containers, credentials and backups are untouched.
+
+GitHub was confirmed as an empty private repository with the owner-authorized
+destination `git@github.com:Proj-Elements/Cerium.git`. Code merge/synchronization
+and branch deletion remain pending until publication state and applicable
+checks are verified. The interrupted Entire upload published the checkpoint
+refs, but not the code branch or a discoverable Trail; its local outgoing queue
+may still list already-uploaded refs. Do not clear or rewrite checkpoint state
+manually to hide this interrupted synchronization.
