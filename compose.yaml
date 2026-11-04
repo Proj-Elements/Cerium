@@ -11,6 +11,8 @@ services:
       SYNC_INTERVAL_SECONDS: ${SYNC_INTERVAL_SECONDS:-900}
       COOKIE_SECURE: ${COOKIE_SECURE:-false}
       PUBLIC_ORIGIN: ${PUBLIC_ORIGIN:-}
+      CERIUM_OUTBOUND_PROXY_URL: ${CERIUM_OUTBOUND_PROXY_URL:-}
+      CERIUM_ICON_ALLOW_FAKE_IP: ${CERIUM_ICON_ALLOW_FAKE_IP:-false}
     volumes: [web-data:/app/data]
     restart: unless-stopped
     init: true
@@ -29,6 +31,7 @@ services:
       CERIUM_WEBHOOK_URL: http://127.0.0.1:3000/api/webhooks/sync
       CERIUM_TURNSTILE_SOLVER_URL: ${CERIUM_TURNSTILE_SOLVER_URL:-http://127.0.0.1:8092}
       CERIUM_MODEL_PROBES_PER_RUN: ${CERIUM_MODEL_PROBES_PER_RUN:-4}
+      CERIUM_OUTBOUND_PROXY_URL: ${CERIUM_OUTBOUND_PROXY_URL:-}
     volumes: [sync-data:/data]
     restart: unless-stopped
     init: true

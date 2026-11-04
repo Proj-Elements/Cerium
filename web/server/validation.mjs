@@ -85,7 +85,19 @@ export function favicon(input, siteURL) {
     (selected && !icons.includes(selected))
   )
     fail("Selected favicon must be one of the unique candidates");
-  return { url: siteURL, icons, selected };
+  if (
+    input.checked_at !== undefined &&
+    (typeof input.checked_at !== "string" ||
+      !Number.isFinite(Date.parse(input.checked_at)) ||
+      Date.parse(input.checked_at) > Date.now() + 300000)
+  )
+    fail("Invalid favicon discovery timestamp");
+  return {
+    url: siteURL,
+    icons,
+    selected,
+    ...(input.checked_at !== undefined ? { checked_at: input.checked_at } : {}),
+  };
 }
 export function catalog(input, scope = "public") {
   if (

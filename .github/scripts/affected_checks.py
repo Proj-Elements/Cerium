@@ -40,6 +40,19 @@ def select_checks(paths):
     return sorted(tests), solver
 
 
+def select_go(paths):
+    """Run the changed sync transport and its bridge/callback dependents only."""
+    return any(
+        path in (
+            "client.go", "client_test.go", "transport.go", "webhook.go",
+            "bridge.go", "bridge_test.go", "go.mod", "go.sum", "Dockerfile",
+            "compose.yaml", ".github/workflows/ci.yml",
+        )
+        or path.startswith(".github/scripts/")
+        for path in paths
+    )
+
+
 def changed_paths(event_name, event, git):
     """Resolve an event's real diff; a new default branch checks its whole snapshot."""
     if event_name == "pull_request":
@@ -73,9 +86,11 @@ def main():
 
     paths = changed_paths(os.environ["GITHUB_EVENT_NAME"], event, git)
     tests, solver = select_checks(paths)
-    print(json.dumps({"changed_files": paths, "node_tests": tests, "solver": solver}))
+    go = select_go(paths)
+    print(json.dumps({"changed_files": paths, "node_tests": tests, "go": go, "solver": solver}))
     with open(os.environ["GITHUB_OUTPUT"], "a", encoding="utf-8") as output:
         output.write("node_tests=" + json.dumps(tests) + "\n")
+        output.write("go=" + str(go).lower() + "\n")
         output.write("solver=" + str(solver).lower() + "\n")
 
 

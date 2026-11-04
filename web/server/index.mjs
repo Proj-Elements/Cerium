@@ -328,7 +328,7 @@ export function createApp(options = {}) {
         if (match) {
           const id = match[1];
           if (match[2] && method === "POST") {
-            store.queue(id);
+            store.queue(id, true);
             return send(res, 202, { queued: true });
           }
           if (!match[2] && method === "PUT")

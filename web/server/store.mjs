@@ -268,17 +268,18 @@ export class Store {
   row(id) {
     return this.db.prepare("SELECT * FROM sites WHERE id=?").get(id);
   }
-  saveFavicon(id, revision, input) {
+  saveFavicon(id, revision, input, previous = null) {
     const row = this.row(id);
-    if (!row || row.revision !== revision || row.favicon !== null) return false;
+    if (!row || row.revision !== revision || row.favicon !== previous)
+      return false;
     const state = favicon(input, JSON.parse(row.config).url);
     if (!state) throw new HttpError(400, "Expected saved favicon discovery");
     return Boolean(
       this.db
         .prepare(
-          "UPDATE sites SET favicon=? WHERE id=? AND revision=? AND favicon IS NULL",
+          "UPDATE sites SET favicon=? WHERE id=? AND revision=? AND favicon IS ?",
         )
-        .run(JSON.stringify(state), id, revision).changes,
+        .run(JSON.stringify(state), id, revision, previous).changes,
     );
   }
   enqueue(row, operation = "sync") {
@@ -414,19 +415,27 @@ export class Store {
       this.db.prepare("DELETE FROM sites WHERE id=?").run(id);
     });
   }
-  queue(id) {
+  queue(id, manual = false) {
     const row = this.row(id);
     if (!row) throw new HttpError(404, "Site not found");
     if (JSON.parse(row.config).type === "others")
       throw new HttpError(400, "Manual sites do not use a provider");
-    if (
-      this.db
-        .prepare(
-          "SELECT id FROM jobs WHERE site_id=? AND revision=? AND state IN ('pending','running')",
-        )
-        .get(id, row.revision)
-    )
+    const job = this.db
+      .prepare(
+        "SELECT id,state FROM jobs WHERE site_id=? AND revision=? AND state IN ('pending','running')",
+      )
+      .get(id, row.revision);
+    if (job) {
+      // Redelivery must reuse the same job ID so a saved Go result cannot rotate
+      // tokens again. A manual retry only shortens the pending job's backoff.
+      if (manual && job.state === "pending")
+        this.db
+          .prepare(
+            "UPDATE jobs SET due=?,error=NULL WHERE id=? AND state='pending'",
+          )
+          .run(Date.now(), job.id);
       return;
+    }
     this.enqueue(row);
   }
   schedule() {
@@ -642,12 +651,12 @@ export class Store {
             status:
               c.type === "others"
                 ? "manual"
-                : row.error
-                  ? "error"
-                  : job
-                    ? job.attempts > 0 && job.error
-                      ? "retrying"
-                      : "pending"
+                : job
+                  ? job.attempts > 0 && job.error
+                    ? "retrying"
+                    : "pending"
+                  : row.error
+                    ? "error"
                     : !row.snapshot
                       ? "waiting"
                       : now - Date.parse(row.fetched_at) > interval * 3000

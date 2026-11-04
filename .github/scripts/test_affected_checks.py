@@ -4,12 +4,18 @@ import subprocess
 import unittest
 from unittest.mock import Mock
 
-from affected_checks import NODE_TESTS, changed_paths, select_checks
+from affected_checks import NODE_TESTS, changed_paths, select_checks, select_go
 
 
 class SelectionTests(unittest.TestCase):
     def test_documents_do_not_run_application_suites(self):
         self.assertEqual(select_checks(["README.md", "solver/README.md"]), ([], False))
+        self.assertFalse(select_go(["README.md", "solver/README.md"]))
+
+    def test_transport_changes_select_focused_go_regressions(self):
+        for path in ["transport.go", "client.go", "client_test.go", "webhook.go", "bridge_test.go", "compose.yaml", ".github/workflows/ci.yml"]:
+            self.assertTrue(select_go([path]))
+        self.assertFalse(select_go(["web/src/Catalog.tsx", "pricing.go"]))
 
     def test_changed_owners_include_deleted_paths(self):
         tests, solver = select_checks(

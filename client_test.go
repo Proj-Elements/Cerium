@@ -24,6 +24,47 @@ type roundTripFunc func(*http.Request) (*http.Response, error)
 
 func (f roundTripFunc) RoundTrip(r *http.Request) (*http.Response, error) { return f(r) }
 
+func TestConfiguredOutboundProxy(t *testing.T) {
+	var calls atomic.Int32
+	proxy := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		calls.Add(1)
+		if r.URL.Host != "panel.example.invalid" || r.URL.Path != "/api/pricing" {
+			t.Errorf("proxy lost the upstream URL: %s", r.URL)
+		}
+		reply(w, `{"success":true,"data":[]}`)
+	}))
+	defer proxy.Close()
+	t.Setenv("CERIUM_OUTBOUND_PROXY_URL", proxy.URL)
+	client, err := newAPIClient("http://panel.example.invalid", time.Second)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := client.request(context.Background(), &Session{}, http.MethodGet, "/api/pricing", nil); err != nil || calls.Load() != 1 {
+		t.Fatalf("configured proxy was not used: calls=%d err=%v", calls.Load(), err)
+	}
+	local := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		reply(w, `{"success":true,"data":[]}`)
+	}))
+	defer local.Close()
+	client, err = newAPIClient(local.URL, time.Second)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := client.request(context.Background(), &Session{}, http.MethodGet, "/healthz", nil); err != nil || calls.Load() != 1 {
+		t.Fatalf("loopback traffic must bypass the outbound proxy: calls=%d err=%v", calls.Load(), err)
+	}
+}
+
+func TestInvalidOutboundProxyFailsWithoutDisclosingCredentials(t *testing.T) {
+	for _, proxy := range []string{"socks5://proxy.example:1080", "http://proxy.example/path", "https://proxy.example?secret=PRIVATE", "http://"} {
+		t.Setenv("CERIUM_OUTBOUND_PROXY_URL", proxy)
+		_, err := newAPIClient("https://panel.example", time.Second)
+		if err == nil || strings.Contains(err.Error(), "PRIVATE") || strings.Contains(err.Error(), "proxy.example") {
+			t.Fatalf("invalid proxy was accepted or disclosed: %v", err)
+		}
+	}
+}
+
 func TestConnectionRetryOnlyForSafeReads(t *testing.T) {
 	for _, tc := range []struct {
 		method  string

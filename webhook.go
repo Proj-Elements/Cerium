@@ -30,10 +30,11 @@ func NewWebhook(rawURL, secret string, timeout time.Duration) (*Webhook, error) 
 	if timeout <= 0 {
 		timeout = 10 * time.Second
 	}
-	return &Webhook{url: u.String(), secret: []byte(secret), client: &http.Client{
-		Timeout:       timeout,
-		CheckRedirect: func(*http.Request, []*http.Request) error { return http.ErrUseLastResponse },
-	}}, nil
+	client, err := newHTTPClient(timeout)
+	if err != nil {
+		return nil, err
+	}
+	return &Webhook{url: u.String(), secret: []byte(secret), client: client}, nil
 }
 
 func (w *Webhook) Publish(ctx context.Context, result Result) error {

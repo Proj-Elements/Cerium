@@ -76,11 +76,11 @@ func newAPIClient(raw string, timeout time.Duration) (*apiClient, error) {
 	if err != nil {
 		return nil, err
 	}
-	return &apiClient{base: base, client: &http.Client{
-		Timeout: timeout,
-		// Never replay passwords, tokens, or webhook bodies at a redirected URL.
-		CheckRedirect: func(*http.Request, []*http.Request) error { return http.ErrUseLastResponse },
-	}}, nil
+	client, err := newHTTPClient(timeout)
+	if err != nil {
+		return nil, err
+	}
+	return &apiClient{base: base, client: client}, nil
 }
 
 func (c *apiClient) request(ctx context.Context, s *Session, method, endpoint string, body any) (envelope, error) {

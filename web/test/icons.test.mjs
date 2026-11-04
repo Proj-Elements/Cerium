@@ -151,6 +151,73 @@ test("tries common favicon locations under both the site prefix and the origin",
   assert.ok(result.icons.length <= 12);
 });
 
+test("Fake-IP support is opt-in for DNS names and never permits literal or other private targets", async () => {
+  const routes = {
+    "/": { status: 200, body: '<link rel="icon" href="/brand.svg">' },
+    "/brand.svg": { status: 200, type: "image/svg+xml", body: svg },
+  };
+  const network = transport(routes, () => [
+    { address: "198.18.0.55", family: 4 },
+  ]);
+  // The synthetic transport still verifies the pinned address below.
+  network.request = (url, options, callback) => {
+    const req = new EventEmitter();
+    req.end = () =>
+      queueMicrotask(() => {
+        options.lookup(url.hostname, {}, (_error, address) =>
+          assert.equal(address, "198.18.0.55"),
+        );
+        network.requests.push(url.href);
+        const route = routes[url.pathname],
+          response = Readable.from([Buffer.from(route?.body ?? "")]);
+        response.statusCode = route?.status ?? 404;
+        response.headers = {
+          "content-type":
+            url.pathname === "/brand.svg" ? "image/svg+xml" : "text/html",
+        };
+        callback(response);
+      });
+    return req;
+  };
+  assert.equal(
+    (
+      await createIconResolver({ ...network, allowFakeIP: false })({
+        url: "https://relay.example",
+      })
+    ).selected,
+    "",
+  );
+  assert.equal(
+    (
+      await createIconResolver({ ...network, allowFakeIP: true })({
+        url: "https://relay.example",
+      })
+    ).selected,
+    "https://relay.example/brand.svg",
+  );
+  network.requests.length = 0;
+  const resolver = createIconResolver({ ...network, allowFakeIP: true });
+  for (const url of [
+    "https://198.18.0.55",
+    "http://127.0.0.1",
+    "http://169.254.169.254",
+  ])
+    assert.equal((await resolver({ url })).selected, "");
+  assert.deepEqual(network.requests, []);
+  const privateNetwork = transport(routes, () => [
+    { address: "10.0.0.1", family: 4 },
+  ]);
+  assert.equal(
+    (
+      await createIconResolver({ ...privateNetwork, allowFakeIP: true })({
+        url: "https://relay.example",
+      })
+    ).selected,
+    "",
+  );
+  assert.deepEqual(privateNetwork.requests, []);
+});
+
 test("revalidates redirects and DNS while refusing private targets and off-origin icon redirects", async () => {
   const redirect = transport({
     "/": { status: 302, location: "http://127.0.0.1/private" },
@@ -239,6 +306,39 @@ test("real HTTP redirects retain the advertised favicon address", async (t) => {
     "https://relay.example/redirect.svg",
   );
   assert.deepEqual(paths, ["/", "/redirect.svg", "/brand.svg"]);
+});
+
+test("configured icon egress uses the HTTP proxy and keeps private origins blocked", async (t) => {
+  const paths = [],
+    proxy = createServer((req, res) => {
+      paths.push(req.url);
+      const icon = req.url.endsWith("brand.svg");
+      res.writeHead(200, {
+        "Content-Type": icon ? "image/svg+xml" : "text/html",
+      });
+      res.end(icon ? svg : '<link rel="icon" href="/brand.svg">');
+    });
+  proxy.listen(0, "127.0.0.1");
+  await once(proxy, "listening");
+  t.after(() => new Promise((resolve) => proxy.close(resolve)));
+  const resolver = createIconResolver({
+    proxyURL: `http://127.0.0.1:${proxy.address().port}`,
+    lookup: async () => [{ address: "8.8.8.8", family: 4 }],
+    allowFakeIP: false,
+  });
+  assert.equal(
+    (await resolver({ url: "http://relay.example" })).selected,
+    "http://relay.example/brand.svg",
+  );
+  assert.deepEqual(paths, [
+    "http://relay.example/",
+    "http://relay.example/brand.svg",
+  ]);
+  assert.equal(
+    (await resolver({ url: "http://169.254.169.254" })).selected,
+    "",
+  );
+  assert.equal(paths.length, 2);
 });
 
 test("the discovery deadline also bounds a stalled DNS lookup", async (t) => {
