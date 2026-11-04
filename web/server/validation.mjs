@@ -7,6 +7,11 @@ export class HttpError extends Error {
 const fail = (message) => {
   throw new HttpError(400, message);
 };
+export function syncInterval(value) {
+  if (!Number.isSafeInteger(value) || value < 60 || value > 31536000)
+    fail("Sync interval must be an integer between 60 and 31536000 seconds");
+  return value;
+}
 export function text(value, max = 200, required = false) {
   if (
     typeof value !== "string" ||
@@ -46,9 +51,47 @@ export function url(value, optional = false) {
     fail("Use an http(s) URL without credentials, query or fragment");
   return u.href.replace(/\/$/, "");
 }
+export function favicon(input, siteURL) {
+  if (input == null) return null;
+  if (
+    typeof input !== "object" ||
+    Array.isArray(input) ||
+    input.url !== siteURL ||
+    !Array.isArray(input.icons) ||
+    input.icons.length > 12 ||
+    typeof input.selected !== "string"
+  )
+    fail("Invalid saved favicon discovery");
+  const iconURL = (value) => {
+    let candidate;
+    try {
+      candidate = new URL(text(value, 2048, true));
+    } catch {
+      fail("Invalid favicon URL");
+    }
+    if (
+      !["http:", "https:"].includes(candidate.protocol) ||
+      candidate.username ||
+      candidate.password ||
+      candidate.hash
+    )
+      fail("Use an http(s) favicon URL without credentials or fragment");
+    return candidate.href;
+  };
+  const icons = input.icons.map(iconURL),
+    selected = input.selected ? iconURL(input.selected) : "";
+  if (
+    new Set(icons).size !== icons.length ||
+    (selected && !icons.includes(selected))
+  )
+    fail("Selected favicon must be one of the unique candidates");
+  return { url: siteURL, icons, selected };
+}
 export function catalog(input, scope = "public") {
   if (
     !input ||
+    typeof input !== "object" ||
+    Array.isArray(input) ||
     input.scope !== scope ||
     !Array.isArray(input.groups) ||
     input.groups.length > 500
@@ -58,6 +101,8 @@ export function catalog(input, scope = "public") {
   return {
     scope,
     groups: input.groups.map((g) => {
+      if (!g || typeof g !== "object" || Array.isArray(g))
+        fail("Invalid catalog group");
       const id = text(g.id, 200, true);
       if (ids.has(id)) fail("Duplicate group");
       ids.add(id);
@@ -86,24 +131,31 @@ export function catalog(input, scope = "public") {
             ? g.models_fetched_at
             : "",
         models: [...new Set((g.models ?? []).map((m) => text(m, 300, true)))],
-        prices: (g.prices ?? []).map((p) => ({
-          model: text(p.model, 300, true),
-          mode: ["tokens", "request", "dynamic", "unknown"].includes(p.mode)
-            ? p.mode
-            : "unknown",
-          input: number(p.input),
-          output: number(p.output),
-          cache_read: number(p.cache_read),
-          cache_write: number(p.cache_write),
-          request: number(p.request),
-          expression: text(p.expression ?? "", 16000),
-        })),
+        prices: (g.prices ?? []).map((p) => {
+          if (!p || typeof p !== "object" || Array.isArray(p))
+            fail("Invalid model price");
+          return {
+            model: text(p.model, 300, true),
+            mode: ["tokens", "request", "dynamic", "unknown"].includes(p.mode)
+              ? p.mode
+              : "unknown",
+            input: number(p.input),
+            output: number(p.output),
+            cache_read: number(p.cache_read),
+            cache_write: number(p.cache_write),
+            request: number(p.request),
+            expression: text(p.expression ?? "", 16000),
+          };
+        }),
       };
     }),
   };
 }
 export function site(input, previous) {
-  if (!input || typeof input !== "object") fail("Invalid site");
+  if (!input || typeof input !== "object" || Array.isArray(input))
+    fail("Invalid site");
+  if (input.enabled !== undefined && typeof input.enabled !== "boolean")
+    fail("Site visibility must be a boolean");
   if (
     input.monitor_changes != null &&
     typeof input.monitor_changes !== "boolean"

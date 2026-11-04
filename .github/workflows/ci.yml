@@ -1,0 +1,108 @@
+name: Focused CI
+
+on:
+  push:
+    branches: [main, "codex/**"]
+  pull_request:
+    types: [opened, reopened, synchronize, edited]
+  merge_group:
+    types: [checks_requested]
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.event_name }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  changes:
+    name: Select affected checks
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    outputs:
+      node_tests: ${{ steps.select.outputs.node_tests }}
+      solver: ${{ steps.select.outputs.solver }}
+    steps:
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+      - name: Validate change selection
+        run: python3 -m unittest discover -s .github/scripts -p 'test_*.py' -v
+      - name: Select owning components
+        id: select
+        run: python3 .github/scripts/affected_checks.py
+
+  node:
+    name: Node API and data regressions
+    needs: changes
+    if: needs.changes.outputs.node_tests != '[]'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@249970729cb0ef3589644e2896645e5dc5ba9c38 # v6
+        with:
+          node-version: "24.22.2"
+          package-manager-cache: false
+      - name: Run selected unit modules without installing frontend dependencies
+        env:
+          NODE_TESTS: ${{ needs.changes.outputs.node_tests }}
+        run: |
+          node --input-type=module <<'JS'
+          import { spawnSync } from "node:child_process";
+          const tests = JSON.parse(process.env.NODE_TESTS);
+          if (!Array.isArray(tests) || !tests.length) throw new Error("Missing selected tests");
+          const result = spawnSync(process.execPath, ["--test", ...tests], { stdio: "inherit" });
+          if (result.error) throw result.error;
+          process.exit(result.status ?? 1);
+          JS
+
+  solver:
+    name: Solver image and polling regressions
+    needs: changes
+    if: needs.changes.outputs.solver == 'true'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
+        with:
+          persist-credentials: false
+      - name: Build the pinned upstream Solver and exercise polling offline
+        run: |
+          docker build --tag cerium-solver-ci:tested ./solver
+          image=$(docker image inspect cerium-solver-ci:tested --format '{{.Id}}')
+          docker run --rm --network none --read-only --tmpfs /tmp:rw,nosuid,nodev,size=128m \
+            --entrypoint python \
+            --mount "type=bind,source=$PWD/solver/test_polling.py,target=/app/test_polling.py,readonly" \
+            "$image" -m unittest -v test_polling
+
+  complete:
+    name: Focused checks passed
+    needs: [changes, node, solver]
+    if: always()
+    runs-on: ubuntu-24.04
+    timeout-minutes: 2
+    steps:
+      - name: Reject failed, cancelled or unexpectedly skipped checks
+        env:
+          SELECTION_RESULT: ${{ needs.changes.result }}
+          NODE_TESTS: ${{ needs.changes.outputs.node_tests }}
+          NODE_RESULT: ${{ needs.node.result }}
+          SOLVER_SELECTED: ${{ needs.changes.outputs.solver }}
+          SOLVER_RESULT: ${{ needs.solver.result }}
+        run: |
+          test "$SELECTION_RESULT" = success
+          if test "$NODE_TESTS" != '[]'; then
+            test "$NODE_RESULT" = success
+          else
+            test "$NODE_RESULT" = skipped
+          fi
+          if test "$SOLVER_SELECTED" = true; then
+            test "$SOLVER_RESULT" = success
+          else
+            test "$SOLVER_RESULT" = skipped
+          fi
