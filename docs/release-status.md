@@ -2,7 +2,8 @@
 
 Updated on 2026-11-04 (Asia/Shanghai). The Docker sections describe the earlier
 `codex/backend-maintenance` rollout; the branch-integration status is recorded
-separately below. No remote CI or new deployment is implied by integration checks.
+separately below. Linked GitHub runs establish remote CI; the integration does
+not perform a new deployment, release, or version-tag push.
 
 ## Local Commits
 
@@ -76,44 +77,99 @@ The 2026-11-03 publication audit found unredacted token strings in retained
 sessions; the Docker rollout did not re-audit that history. On 2026-11-04 the
 owner explicitly authorized uploading project session logs to the existing
 private organization repository, without deleting checkpoints or changing
-visibility. All seven retained checkpoint refs now match the configured Entire
-remote. This resolves the sharing-scope approval, not the historical redaction
+visibility. All seven previously retained checkpoint refs match the configured
+Entire remote, and the outgoing queue is empty after normal pushes. This resolves
+the sharing-scope approval and that synchronization, not the historical redaction
 limitations; no credentials were rotated and no token values are reproduced here.
 
-- TODO (remote CI): publish the integration candidate to the private GitHub
-  repository `Proj-Elements/Cerium` and observe its exact-SHA push and PR checks.
-  GitHub Actions is enabled and focused API/data and Solver checks are now in
-  `.github/workflows/ci.yml`. Current GitHub DNS/connection failures block code
-  synchronization and remote validation. Remove this item after the configured
-  runs complete and their results are verified. The earlier Entire checks API
-  reported `configured: false` and `runners_enabled: false`; no protection or
-  runner settings have been changed to bypass gates.
+GitHub publication and the integration CI checks are complete; the exact source
+and run links are recorded below. HTTPS Git transport was used per command because
+SSH remained unavailable. Repository visibility, account configuration, branch
+protections, and runner settings were not changed to bypass failures or gates.
+
 - TODO (premium frontend CI): configure an authorized HeroUI setup secret before
   adding cache-free frontend builds and browser checks to GitHub CI. The current
   remote workflow intentionally covers dependency-free Node regressions and the
   Solver image only. Remove this item when an isolated secret-aware build and
   the affected browser checks pass remotely, without exposing setup credentials
   to untrusted pull requests.
+- TODO (Entire Trail access): restore supported control-plane connectivity and
+  cell discovery before using native Trails for subsequent review work. Repository
+  and project resolution through `us.auth.entire.io` fails with EOF or TLS timeout;
+  the explicit existing-cell API fallback also rejects missing trusted-login
+  discovery. Remove this item when normal Trail listing, showing, and gate reads
+  succeed. No native Trail creation, approval, or current Entire CI result is
+  claimed. The initial checks audit reported `configured: false` and
+  `runners_enabled: false`, but current API state cannot be refreshed. Native Git
+  code and checkpoint synchronization nevertheless succeeds.
+- TODO (managed Codex hook discovery): resolve the managed-worktree hook path
+  under explicit setup authorization before relying on automatic associations
+  there. Status reports `worktree_path_not_discovered`, with the original checkout
+  as the discovered project path; CI commit `6c9ee17` has no automatic checkpoint
+  association. Remove this item after a normal tracked commit in a managed
+  worktree automatically receives its checkpoint association. No manual
+  checkpoint, fabricated trailer, amendment, or hook reinstall was used to hide
+  the historical gap.
 
 ## Branch Integration
 
 The initial checkout had no staged, unstaged or untracked source changes. Its
-only local work branch, `codex/backend-maintenance` at `0047a93`, contains six
-commits beyond `main` at `f85a035`. Their application source is retained unchanged
-on the isolated `codex/main-integration` worktree; the added changes are focused
-GitHub CI and this status update. No version tag or deployment is requested.
+local work branch, `codex/backend-maintenance` at `0047a93`, contained six
+commits beyond `main` at `f85a035`. Candidate `6c9ee17` retained their application
+source unchanged and added focused GitHub CI plus the integration status. All
+142 tracked-file hashes matched the verified candidate before merging. During
+retry, the owner explicitly requested discarding the unrelated uncommitted
+`web/server/icons.mjs` patch; only that worktree change was restored.
 
-Fresh focused verification passes: 55 Node 24 tests in an offline non-root
+Focused local candidate verification passes: 55 Node 24 tests in an offline non-root
 container, two polling tests in a source-equivalent Solver image, five public
 and three admin Playwright tests, the existing frontend TypeScript/Vite build,
-seven CI-selector tests, real-diff selection, and workflow formatting. These are
-local checks, not remote CI. Browser fixture databases are cleaned up; production
-data, containers, credentials and backups are untouched.
+seven CI-selector tests, real-diff selection, and workflow formatting. Browser
+fixture databases are cleaned up; production data, containers, credentials and
+backups are untouched.
 
-GitHub was confirmed as an empty private repository with the owner-authorized
-destination `git@github.com:Proj-Elements/Cerium.git`. Code merge/synchronization
-and branch deletion remain pending until publication state and applicable
-checks are verified. The interrupted Entire upload published the checkpoint
-refs, but not the code branch or a discoverable Trail; its local outgoing queue
-may still list already-uploaded refs. Do not clear or rewrite checkpoint state
-manually to hide this interrupted synchronization.
+The initially empty private GitHub repository received baseline `f85a035` and
+the integration candidate without replacing Git history. [PR #1](https://github.com/Proj-Elements/Cerium/pull/1)
+was created with `gh` CLI and merged once, using GitHub's authenticated native
+merge identity. The merge is `96cb4900c9859c9f3287ad70d00217b6086ba56b`; its tree
+matches `6c9ee17`, and all existing commit IDs and authors are retained. Local
+`main` was fast-forwarded to that result, and the same commit was pushed to
+Entire. Both remote `main` refs were verified equal after the integration merge;
+this docs-only completion record continues that shared history.
+
+### Verified Remote CI
+
+- [Candidate push](https://github.com/Proj-Elements/Cerium/actions/runs/41844969275):
+  `6c9ee17894815e0dd948133c859db9dea017a62e`, `push`, `codex/main-integration`.
+- [PR checks](https://github.com/Proj-Elements/Cerium/actions/runs/41848215295):
+  the same candidate SHA, `pull_request`, PR #1.
+- [Merged main push](https://github.com/Proj-Elements/Cerium/actions/runs/41853552622):
+  `96cb4900c9859c9f3287ad70d00217b6086ba56b`, `push`, `main`.
+
+Each run completed successfully with all four declared jobs: change selection,
+Node API/data regressions, Solver image/polling regressions, and the explicit
+aggregate gate. There were no failed, cancelled, or skipped jobs. The remote
+Solver checks built the pinned image and ran its two offline polling regressions;
+normal service startup, health, and shutdown for that newly built image remain
+separate from the earlier source-equivalent cached-image verification. No global
+suite, release tag, image publication, or deployment was triggered.
+
+No unresolved review threads or required independent review blocked the merge.
+Copilot could not review because its requester had insufficient quota; this is
+not presented as an independent review or approval.
+
+### Completed Cleanup
+
+- Deleted local `codex/backend-maintenance` and `codex/main-integration` only after
+  ancestry checks proved they had no unique commits outside integrated `main`.
+- Deleted remote `codex/main-integration` from GitHub and Entire with exact-SHA
+  deletion leases, protecting against concurrent branch updates. Both remotes
+  and the local repository retain only `main` as an ordinary branch.
+- Returned the original checkout to `main`; the integration checkout is clean
+  and detached. The app refused its archival because it is this task's primary
+  checkout, so it was retained rather than removed through another tool.
+- Preserved all `refs/entire/checkpoints/*`, ignored original dependencies,
+  deployment configuration, databases, backups, and containers. Task verification
+  logs, screenshots, and necessary ignored integration artifacts remain outside
+  Git in the integration verification directory; no checkpoint state was cleared
+  or rewritten manually.

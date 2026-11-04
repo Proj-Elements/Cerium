@@ -303,5 +303,5 @@ node scripts/benchmark-store.mjs
 浏览器夹具通过 SIGTERM 优雅退出；等待 Go 子进程退出前先注册监听，避免进程组同时收到信号时漏掉退出事件。
 2026-11-03 的完整本地回归、隔离容器验证、性能对比及验证边界见 [后端维护验证记录](backend-verification.md)。
 
-- TODO（构建验证）：Docker Hub 鉴权服务恢复后，重新构建 Solver 并执行轮询回归、非 root 启动和停止检查；本次拉取基础镜像时返回 EOF，仅验证了源码一致的缓存镜像，完整新构建与上述检查通过后删除此项。
+- TODO（运行验证）：补验 GitHub CI 新构建 Solver 镜像的正常服务启动、健康检查与非 root 停止；[分支整合 CI](release-status.md#verified-remote-ci) 已通过固定上游镜像构建和两项离线轮询回归，原 Docker Hub EOF 不再阻塞这两项。此前本地启动与停止证据仍来自源码一致的缓存镜像，新的候选镜像完成上述运行检查后删除此项。
 - TODO（构建验证）：在具备授权的 `HEROUI_SETUP_TOKEN` 环境中，以 BuildKit secret 执行无缓存 Web 镜像构建，再验证启动、静态资源与 API；本次复用了私有依赖安装层，无法证明全新授权安装成功，无缓存构建和运行检查通过后删除此项。不要把令牌写入命令参数、日志或仓库文件。
