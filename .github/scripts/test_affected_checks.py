@@ -13,7 +13,7 @@ class SelectionTests(unittest.TestCase):
         self.assertFalse(select_go(["README.md", "solver/README.md"]))
 
     def test_transport_changes_select_focused_go_regressions(self):
-        for path in ["transport.go", "client.go", "client_test.go", "webhook.go", "bridge_test.go", "compose.yaml", ".github/workflows/ci.yml"]:
+        for path in ["transport.go", "client.go", "client_test.go", "webhook.go", "bridge_test.go", "turnstile.go", "turnstile_test.go", "compose.yaml", ".github/workflows/ci.yml"]:
             self.assertTrue(select_go([path]))
         self.assertFalse(select_go(["web/src/Catalog.tsx", "pricing.go"]))
 
@@ -27,8 +27,11 @@ class SelectionTests(unittest.TestCase):
 
     def test_ci_changes_validate_every_declared_job(self):
         tests, solver = select_checks([".github/workflows/ci.yml"])
-        self.assertEqual(len(tests), 8)
+        self.assertEqual(len(tests), 9)
         self.assertTrue(solver)
+
+    def test_icon_tls_fixture_selects_its_owning_transport_tests(self):
+        self.assertEqual(select_checks(["web/test/fixtures/icon-tls.mjs"]), (["web/test/icon-transport.test.mjs"], False))
 
     def test_pull_request_uses_target_merge_base(self):
         git = Mock(side_effect=["merge-base\n", "web/server/store.mjs\0"])

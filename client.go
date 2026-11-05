@@ -72,11 +72,16 @@ func parseBaseURL(raw string) (*url.URL, error) {
 }
 
 func newAPIClient(raw string, timeout time.Duration) (*apiClient, error) {
+	return newAPIClientWithTransport(raw, timeout, false)
+}
+
+// newAPIClientWithTransport keeps trusted service calls off upstream proxies.
+func newAPIClientWithTransport(raw string, timeout time.Duration, direct bool) (*apiClient, error) {
 	base, err := parseBaseURL(raw)
 	if err != nil {
 		return nil, err
 	}
-	client, err := newHTTPClient(timeout)
+	client, err := newHTTPClient(timeout, direct)
 	if err != nil {
 		return nil, err
 	}

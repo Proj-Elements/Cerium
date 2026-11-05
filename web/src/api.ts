@@ -10,11 +10,12 @@ export async function api<T>(
   path: string,
   method = "GET",
   data?: unknown,
+  timeout = 15000,
 ): Promise<T> {
   const response = await fetch(path, {
     method,
     credentials: "same-origin",
-    signal: AbortSignal.timeout(15000),
+    signal: AbortSignal.timeout(timeout),
     headers:
       method === "GET"
         ? {}

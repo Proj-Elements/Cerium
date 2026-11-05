@@ -18,7 +18,7 @@ func solveTurnstile(ctx context.Context, solverURL, pageURL, sitekey string) (st
 	if solverURL == "" {
 		return "", errors.New("Turnstile is enabled; configure CERIUM_TURNSTILE_SOLVER_URL")
 	}
-	client, err := newAPIClient(solverURL, 10*time.Second)
+	client, err := newAPIClientWithTransport(solverURL, 10*time.Second, true)
 	if err != nil {
 		return "", errors.New("invalid Turnstile solver URL")
 	}

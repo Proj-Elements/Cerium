@@ -65,6 +65,70 @@ func TestInvalidOutboundProxyFailsWithoutDisclosingCredentials(t *testing.T) {
 	}
 }
 
+func TestConfiguredOutboundProxyKeepsInternalServicesDirect(t *testing.T) {
+	var proxied, callbacks, solverCalls atomic.Int32
+	proxy := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		proxied.Add(1)
+		w.WriteHeader(http.StatusBadGateway)
+	}))
+	defer proxy.Close()
+	callback := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		callbacks.Add(1)
+		body, _ := io.ReadAll(r.Body)
+		mac := hmac.New(sha256.New, []byte("fixture-secret"))
+		mac.Write([]byte(r.Header.Get("X-Cerium-Timestamp") + "\n"))
+		mac.Write(body)
+		if r.Header.Get("X-Cerium-Signature") != "sha256="+hex.EncodeToString(mac.Sum(nil)) {
+			t.Error("callback signature was lost")
+		}
+	}))
+	defer callback.Close()
+	solver := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		solverCalls.Add(1)
+		if r.URL.Path == "/turnstile" {
+			w.WriteHeader(http.StatusAccepted)
+			reply(w, `{"task_id":"fixture-task"}`)
+		} else {
+			reply(w, `{"value":"fixture-proof"}`)
+		}
+	}))
+	defer solver.Close()
+	t.Setenv("CERIUM_OUTBOUND_PROXY_URL", proxy.URL)
+	t.Setenv("HTTP_PROXY", proxy.URL)
+	t.Setenv("NO_PROXY", "web,solver")
+	// Route synthetic Docker service names to isolated local fixtures, never real services.
+	previous := http.DefaultTransport
+	transport := previous.(*http.Transport).Clone()
+	transport.DialContext = func(ctx context.Context, network, address string) (net.Conn, error) {
+		switch address {
+		case "web:3000":
+			address = callback.Listener.Addr().String()
+		case "solver:8092":
+			address = solver.Listener.Addr().String()
+		}
+		return (&net.Dialer{}).DialContext(ctx, network, address)
+	}
+	http.DefaultTransport = transport
+	t.Cleanup(func() {
+		http.DefaultTransport = previous
+		transport.CloseIdleConnections()
+	})
+	webhook, err := NewWebhook("http://web:3000/api/webhooks/sync", "fixture-secret", time.Second)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := webhook.Publish(context.Background(), Result{}); err != nil {
+		t.Errorf("internal callback was not direct: %v", err)
+	}
+	token, err := solveTurnstile(context.Background(), "http://solver:8092", "https://panel.example/login", "sitekey")
+	if err != nil || token != "fixture-proof" {
+		t.Errorf("internal solver was not direct: token=%q err=%v", token, err)
+	}
+	if proxied.Load() != 0 || callbacks.Load() != 1 || solverCalls.Load() != 2 {
+		t.Fatalf("unexpected routing: proxied=%d callbacks=%d solver=%d", proxied.Load(), callbacks.Load(), solverCalls.Load())
+	}
+}
+
 func TestConnectionRetryOnlyForSafeReads(t *testing.T) {
 	for _, tc := range []struct {
 		method  string

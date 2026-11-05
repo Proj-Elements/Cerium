@@ -1,15 +1,7 @@
 import { lookup } from "node:dns/promises";
 import { BlockList, isIP } from "node:net";
-import { Agent as HttpAgent, request as httpRequest } from "node:http";
-import { Agent as HttpsAgent, request as httpsRequest } from "node:https";
 import { favicon, HttpError } from "./validation.mjs";
-
-const requestURL = (url, options, callback) =>
-  (url.protocol === "https:" ? httpsRequest : httpRequest)(
-    url,
-    options,
-    callback,
-  );
+import { createIconRequest } from "./icon-transport.mjs";
 
 const globalIPv6 = new BlockList();
 globalIPv6.addSubnet("2000::", 3, "ipv6");
@@ -110,6 +102,7 @@ async function readResource(
       url,
       {
         signal: deadline,
+        targetAddress: address.address,
         lookup: (_hostname, options, callback) => {
           if (options.all) callback(null, [address]);
           else callback(null, address.address, address.family);
@@ -234,18 +227,13 @@ function isIcon(body, type) {
 }
 
 export function createIconResolver(options = {}) {
-  const proxy = options.proxyURL ?? process.env.CERIUM_OUTBOUND_PROXY_URL,
-    proxyEnv = proxy ? { HTTP_PROXY: proxy, HTTPS_PROXY: proxy } : process.env,
-    agents = {
-      "http:": new HttpAgent({ proxyEnv }),
-      "https:": new HttpsAgent({ proxyEnv }),
-    };
   const transport = {
     lookup: options.lookup ?? lookup,
     request:
       options.request ??
-      ((url, input, callback) =>
-        requestURL(url, { ...input, agent: agents[url.protocol] }, callback)),
+      createIconRequest(
+        options.proxyURL ?? process.env.CERIUM_OUTBOUND_PROXY_URL,
+      ),
     // Only a trusted TUN proxy can make benchmark-range DNS answers routable.
     // Literal IPs, metadata endpoints and all other private ranges stay blocked.
     allowFakeIP:
@@ -253,7 +241,7 @@ export function createIconResolver(options = {}) {
   };
   return async (site) => {
     try {
-      const pageDeadline = AbortSignal.timeout(4500),
+      const pageDeadline = AbortSignal.timeout(10000),
         target = await publicTarget(site.url, pageDeadline, transport);
       let page;
       try {
@@ -283,12 +271,12 @@ export function createIconResolver(options = {}) {
           ].map((path) => new URL(path, directory).href),
         ]),
       ].filter((candidate) => candidate.length <= 2048);
-      const probeDeadline = AbortSignal.timeout(4500);
+      const probeDeadline = AbortSignal.timeout(10000);
       for (const candidate of icons) {
         if (probeDeadline.aborted) break;
         const deadline = AbortSignal.any([
           probeDeadline,
-          AbortSignal.timeout(1250),
+          AbortSignal.timeout(5000),
         ]);
         try {
           const target = await publicTarget(candidate, deadline, transport),

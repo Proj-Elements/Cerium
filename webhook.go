@@ -30,7 +30,7 @@ func NewWebhook(rawURL, secret string, timeout time.Duration) (*Webhook, error) 
 	if timeout <= 0 {
 		timeout = 10 * time.Second
 	}
-	client, err := newHTTPClient(timeout)
+	client, err := newHTTPClient(timeout, true)
 	if err != nil {
 		return nil, err
 	}

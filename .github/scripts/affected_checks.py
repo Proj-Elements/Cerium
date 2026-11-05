@@ -10,6 +10,7 @@ NODE_TESTS = (
     "web/test/admin-data.test.mjs",
     "web/test/changes.test.mjs",
     "web/test/favicon-state.test.mjs",
+    "web/test/icon-transport.test.mjs",
     "web/test/icons.test.mjs",
     "web/test/server.test.mjs",
     "web/test/store-read.test.mjs",
@@ -35,6 +36,8 @@ def select_checks(paths):
             tests.update(NODE_TESTS)
         elif path.startswith("web/test/") and path.endswith(".test.mjs"):
             tests.add(path)
+        elif path == "web/test/fixtures/icon-tls.mjs":
+            tests.add("web/test/icon-transport.test.mjs")
         elif path == "web/src/group-preview.ts":
             tests.add("web/test/group-preview.test.mjs")
     return sorted(tests), solver
@@ -45,7 +48,7 @@ def select_go(paths):
     return any(
         path in (
             "client.go", "client_test.go", "transport.go", "webhook.go",
-            "bridge.go", "bridge_test.go", "go.mod", "go.sum", "Dockerfile",
+            "bridge.go", "bridge_test.go", "turnstile.go", "turnstile_test.go", "go.mod", "go.sum", "Dockerfile",
             "compose.yaml", ".github/workflows/ci.yml",
         )
         or path.startswith(".github/scripts/")

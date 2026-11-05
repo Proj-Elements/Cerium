@@ -10,11 +10,15 @@ import (
 	"time"
 )
 
-// newHTTPClient applies the optional service egress proxy, but keeps local
-// bridge and solver calls direct. Redirects never replay credentials.
-func newHTTPClient(timeout time.Duration) (*http.Client, error) {
+// newHTTPClient applies the optional upstream egress proxy. Service calls opt
+// out entirely, including environment proxies. Redirects never replay credentials.
+func newHTTPClient(timeout time.Duration, direct bool) (*http.Client, error) {
 	transport := http.DefaultTransport
-	if raw := strings.TrimSpace(os.Getenv("CERIUM_OUTBOUND_PROXY_URL")); raw != "" {
+	if direct {
+		configured := http.DefaultTransport.(*http.Transport).Clone()
+		configured.Proxy = nil
+		transport = configured
+	} else if raw := strings.TrimSpace(os.Getenv("CERIUM_OUTBOUND_PROXY_URL")); raw != "" {
 		proxy, err := url.Parse(raw)
 		if err != nil || proxy.Hostname() == "" || (proxy.Scheme != "http" && proxy.Scheme != "https") ||
 			(proxy.Path != "" && proxy.Path != "/") || proxy.RawQuery != "" || proxy.Fragment != "" {

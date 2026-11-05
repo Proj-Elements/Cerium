@@ -2,8 +2,9 @@ import { test } from "node:test";
 import assert from "node:assert/strict";
 import { EventEmitter, once } from "node:events";
 import { createServer, request as httpRequest } from "node:http";
-import { isIP } from "node:net";
+import { connect as netConnect, isIP } from "node:net";
 import { Readable } from "node:stream";
+import { setTimeout as delay } from "node:timers/promises";
 import {
   isPublicAddress,
   findIcons,
@@ -78,7 +79,12 @@ function transport(routes, addresses) {
             assert.ok(values.every(({ address }) => isPublicAddress(address)));
           });
           const route = routes[url.pathname + url.search] ?? {},
-            response = Readable.from([Buffer.from(route.body ?? "")]);
+            response = Readable.from(
+              (async function* () {
+                if (route.delay) await delay(route.delay);
+                yield Buffer.from(route.body ?? "");
+              })(),
+            );
           response.statusCode = route.status ?? 404;
           response.headers = {
             "content-type": route.type ?? "text/html",
@@ -149,6 +155,23 @@ test("tries common favicon locations under both the site prefix and the origin",
     result.icons.includes("https://relay.example/apple-touch-icon.png"),
   );
   assert.ok(result.icons.length <= 12);
+});
+
+test("icon discovery tolerates a slow proxy response without losing the advertised icon", async () => {
+  const network = transport({
+    "/": { status: 200, body: '<link rel="icon" href="/brand.svg">' },
+    "/brand.svg": {
+      status: 200,
+      type: "image/svg+xml",
+      body: svg,
+      delay: 1500,
+    },
+  });
+  assert.equal(
+    (await createIconResolver(network)({ url: "https://relay.example" }))
+      .selected,
+    "https://relay.example/brand.svg",
+  );
 });
 
 test("Fake-IP support is opt-in for DNS names and never permits literal or other private targets", async () => {
@@ -308,21 +331,81 @@ test("real HTTP redirects retain the advertised favicon address", async (t) => {
   assert.deepEqual(paths, ["/", "/redirect.svg", "/brand.svg"]);
 });
 
-test("configured icon egress uses the HTTP proxy and keeps private origins blocked", async (t) => {
-  const paths = [],
+test("a proxy cannot re-resolve a validated hostname to a private icon origin", async (t) => {
+  let privateRequests = 0;
+  const privateServer = createServer((_req, res) => {
+    privateRequests++;
+    res.writeHead(200, { "Content-Type": "image/svg+xml" });
+    res.end(svg);
+  });
+  privateServer.listen(0, "127.0.0.1");
+  await once(privateServer, "listening");
+  t.after(() => new Promise((resolve) => privateServer.close(resolve)));
+  const targets = [],
     proxy = createServer((req, res) => {
+      // Simulate a different DNS view at the proxy without touching real services.
+      const upstream = httpRequest(
+        `http://127.0.0.1:${privateServer.address().port}/private.svg`,
+        (source) => {
+          res.writeHead(source.statusCode, source.headers);
+          source.pipe(res);
+        },
+      );
+      upstream.end();
+    });
+  proxy.on("connect", (req, socket) => {
+    targets.push(req.url);
+    socket.end("HTTP/1.1 403 Forbidden\r\nConnection: close\r\n\r\n");
+  });
+  proxy.listen(0, "127.0.0.1");
+  await once(proxy, "listening");
+  t.after(() => new Promise((resolve) => proxy.close(resolve)));
+  const resolver = createIconResolver({
+    proxyURL: `http://localhost:${proxy.address().port}`,
+    lookup: async () => [{ address: "8.8.8.8", family: 4 }],
+    allowFakeIP: false,
+  });
+  const result = await resolver({ url: "http://panel.example" });
+  assert.equal(privateRequests, 0);
+  assert.equal(result.selected, "");
+  assert.ok(targets.length > 0);
+  assert.ok(targets.every((target) => target === "8.8.8.8:80"));
+});
+
+test("configured icon egress resolves the proxy hostname separately and keeps private origins blocked", async (t) => {
+  const paths = [],
+    tunnels = [],
+    hosts = [],
+    origin = createServer((req, res) => {
       paths.push(req.url);
+      hosts.push(req.headers.host);
       const icon = req.url.endsWith("brand.svg");
       res.writeHead(200, {
         "Content-Type": icon ? "image/svg+xml" : "text/html",
       });
       res.end(icon ? svg : '<link rel="icon" href="/brand.svg">');
     });
+  origin.listen(0, "127.0.0.1");
+  await once(origin, "listening");
+  t.after(() => new Promise((resolve) => origin.close(resolve)));
+  const proxy = createServer();
+  proxy.on("connect", (req, socket, head) => {
+    tunnels.push(req.url);
+    const upstream = netConnect(origin.address().port, "127.0.0.1", () => {
+      socket.write("HTTP/1.1 200 Connection Established\r\n\r\n");
+      if (head.length) upstream.write(head);
+      socket.pipe(upstream).pipe(socket);
+    });
+    socket.on("error", () => upstream.destroy());
+    socket.on("close", () => upstream.destroy());
+    upstream.on("error", () => socket.destroy());
+    upstream.on("close", () => socket.destroy());
+  });
   proxy.listen(0, "127.0.0.1");
   await once(proxy, "listening");
   t.after(() => new Promise((resolve) => proxy.close(resolve)));
   const resolver = createIconResolver({
-    proxyURL: `http://127.0.0.1:${proxy.address().port}`,
+    proxyURL: `http://localhost:${proxy.address().port}`,
     lookup: async () => [{ address: "8.8.8.8", family: 4 }],
     allowFakeIP: false,
   });
@@ -330,10 +413,9 @@ test("configured icon egress uses the HTTP proxy and keeps private origins block
     (await resolver({ url: "http://relay.example" })).selected,
     "http://relay.example/brand.svg",
   );
-  assert.deepEqual(paths, [
-    "http://relay.example/",
-    "http://relay.example/brand.svg",
-  ]);
+  assert.deepEqual(paths, ["/", "/brand.svg"]);
+  assert.deepEqual(tunnels, ["8.8.8.8:80", "8.8.8.8:80"]);
+  assert.deepEqual(hosts, ["relay.example", "relay.example"]);
   assert.equal(
     (await resolver({ url: "http://169.254.169.254" })).selected,
     "",
