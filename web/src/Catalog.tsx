@@ -34,6 +34,7 @@ import {
   ModelIcon,
   ModelPriceBadges,
   ModelPriceCells,
+  PriceAmount,
   useModelReference,
 } from "./ModelPrice";
 import { modelDisplayName } from "./model-display";
@@ -131,8 +132,8 @@ function Models({ group, type }: { group: Group; type: string }) {
                         (price.cache_read != null ||
                           price.cache_write != null) && (
                           <small>
-                            缓存读 {n(price.cache_read)} / 写{" "}
-                            {n(price.cache_write)}
+                            缓存读 <PriceAmount value={price.cache_read} /> / 写{" "}
+                            <PriceAmount value={price.cache_write} />
                           </small>
                         )}
                     </td>
@@ -262,9 +263,9 @@ export function SiteDetails({
                     <Modal.Heading>{site.name}</Modal.Heading>
                   </div>
                 </div>
-                <p className="detail-description muted">
-                  {site.description || "查看本站公开分组与倍率。"}
-                </p>
+                {site.description && (
+                  <p className="detail-description muted">{site.description}</p>
+                )}
                 <div className="detail-link-row">
                   <span className="site-domain">
                     {site.url.replace(/^https?:\/\//, "")}
@@ -295,19 +296,10 @@ export function SiteDetails({
                           "未提供"
                         ) : (
                           <>
-                            {n(site.recharge_cny)}
-                            <small> CNY</small> = {n(site.recharge_usd)}
-                            <small> USD</small>
+                            {n(site.recharge_cny / (site.recharge_usd || 1))}
+                            <small> CNY</small> = 1<small> USD</small>
                           </>
                         )}
-                      </strong>
-                    </div>
-                    <div>
-                      <span>充值倍率</span>
-                      <strong>
-                        {site.recharge_multiplier == null
-                          ? "未提供"
-                          : `${n(site.recharge_multiplier)}×`}
                       </strong>
                     </div>
                   </div>
@@ -490,11 +482,6 @@ function SiteCard({
           </span>
         </div>
       </Card.Header>
-      <Card.Content className="relay-content">
-        <p className="site-description">
-          {site.description || "一个值得发现的 AI 入口，点击了解更多。"}
-        </p>
-      </Card.Content>
       <div className="rate-summary">
         <div>
           <span className="rate-label">

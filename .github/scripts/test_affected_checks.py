@@ -27,7 +27,7 @@ class SelectionTests(unittest.TestCase):
 
     def test_ci_changes_validate_every_declared_job(self):
         tests, solver = select_checks([".github/workflows/ci.yml"])
-        self.assertEqual(len(tests), 9)
+        self.assertEqual(len(tests), 10)
         self.assertTrue(solver)
 
     def test_icon_tls_fixture_selects_its_owning_transport_tests(self):

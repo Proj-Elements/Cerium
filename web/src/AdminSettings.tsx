@@ -1,5 +1,12 @@
 import { useRef, useState, type FormEvent } from "react";
-import { Button, Input, Label, Modal, TextField } from "@heroui/react";
+import {
+  Button,
+  Input,
+  Label,
+  Modal,
+  TextArea,
+  TextField,
+} from "@heroui/react";
 import { api, APIError, message } from "./api";
 import {
   BACKUP_LIMIT,
@@ -14,6 +21,7 @@ import "./admin-settings.css";
 type Props = {
   base: string;
   interval: number;
+  paymentPresets: string[];
   siteCount: number;
   close: () => void;
   saved: (notice: string) => Promise<void>;
@@ -103,9 +111,67 @@ function SyncForm({
     </form>
   );
 }
+function PaymentForm({
+  base,
+  presets,
+  busy,
+  run,
+}: {
+  base: string;
+  presets: string[];
+  busy: boolean;
+  run: (fn: () => Promise<string>) => Promise<void>;
+}) {
+  const [value, setValue] = useState(presets.join("\n"));
+  return (
+    <form
+      className="payment-settings-form"
+      onSubmit={(event) => {
+        event.preventDefault();
+        void run(async () => {
+          const payment_presets = [
+            ...new Set(
+              value
+                .split(/\r?\n/)
+                .map((name) => name.trim())
+                .filter(Boolean),
+            ),
+          ];
+          if (
+            payment_presets.length > 32 ||
+            payment_presets.some((name) => name.length > 40)
+          )
+            throw new Error("最多 32 个支付渠道，每个名称不超过 40 个字符");
+          await api(`${base}/settings`, "PUT", { payment_presets });
+          return "支付渠道预设已保存，添加或编辑站点时可选择。";
+        });
+      }}
+    >
+      <div className="form-section-title">
+        <span>02</span>支付渠道预设
+      </div>
+      <TextField
+        value={value}
+        onChange={setValue}
+        isDisabled={busy}
+        variant="secondary"
+      >
+        <Label>支付渠道预设（每行一个）</Label>
+        <TextArea rows={3} placeholder={"云猫寄售\n链动小铺\n站点直充"} />
+      </TextField>
+      <p className="field-help">
+        最多 32 项。调整预设不会更改已保存站点的支付渠道。
+      </p>
+      <Button type="submit" variant="secondary" isDisabled={busy}>
+        保存支付渠道
+      </Button>
+    </form>
+  );
+}
 export function AdminSettings({
   base,
   interval,
+  paymentPresets,
   siteCount,
   close,
   saved,
@@ -166,9 +232,16 @@ export function AdminSettings({
                 busy={busy}
                 run={run}
               />
+              <PaymentForm
+                key={JSON.stringify(paymentPresets)}
+                base={base}
+                presets={paymentPresets}
+                busy={busy}
+                run={run}
+              />
               <section className="backup-settings" aria-label="数据备份">
                 <div className="form-section-title">
-                  <span>02</span>导入与导出
+                  <span>03</span>导入与导出
                 </div>
                 <p className="field-help">
                   包含全部站点、账号密码 /

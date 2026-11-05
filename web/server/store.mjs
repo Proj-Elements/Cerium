@@ -8,6 +8,8 @@ import {
   favicon,
   HttpError,
   syncInterval,
+  paymentPresets,
+  DEFAULT_PAYMENT_PRESETS,
 } from "./validation.mjs";
 import { compareCatalogs } from "./changes.mjs";
 import { validateBackup, siteIdentity } from "./backup.mjs";
@@ -49,6 +51,9 @@ export class Store {
       .prepare("INSERT OR IGNORE INTO settings VALUES(?,?)")
       .run("sync_interval_seconds", String(syncInterval(interval)));
     syncInterval(this.interval);
+    this.db
+      .prepare("INSERT OR IGNORE INTO settings VALUES(?,?)")
+      .run("payment_presets", JSON.stringify(DEFAULT_PAYMENT_PRESETS));
     this.db.exec("UPDATE jobs SET state='pending' WHERE state='running'");
   }
   get interval() {
@@ -75,12 +80,44 @@ export class Store {
   setInterval(value) {
     return this.transaction(() => this.writeInterval(value));
   }
+  get paymentPresets() {
+    return JSON.parse(
+      this.db
+        .prepare("SELECT value FROM settings WHERE key='payment_presets'")
+        .get().value,
+    );
+  }
+  setSettings(input) {
+    const interval =
+      input.sync_interval_seconds === undefined
+        ? undefined
+        : syncInterval(input.sync_interval_seconds);
+    const presets = Object.hasOwn(input, "payment_presets")
+      ? paymentPresets(input.payment_presets)
+      : undefined;
+    if (interval === undefined && presets === undefined)
+      throw new HttpError(400, "No supported settings supplied");
+    return this.transaction(() => {
+      if (interval !== undefined) this.writeInterval(interval);
+      if (presets !== undefined)
+        this.db
+          .prepare("UPDATE settings SET value=? WHERE key='payment_presets'")
+          .run(JSON.stringify(presets));
+      return {
+        sync_interval_seconds: this.interval,
+        payment_presets: this.paymentPresets,
+      };
+    });
+  }
   exportData() {
     return {
       format: "cerium-web-backup",
       version: 1,
       exported_at: new Date().toISOString(),
-      settings: { sync_interval_seconds: this.interval },
+      settings: {
+        sync_interval_seconds: this.interval,
+        payment_presets: this.paymentPresets,
+      },
       sites: this.db
         .prepare("SELECT * FROM sites ORDER BY rowid")
         .all()
@@ -151,6 +188,10 @@ export class Store {
         if (identity !== null) identities.add(identity);
       }
       this.writeInterval(data.settings.sync_interval_seconds);
+      if (data.settings.payment_presets !== undefined)
+        this.db
+          .prepare("UPDATE settings SET value=? WHERE key='payment_presets'")
+          .run(JSON.stringify(data.settings.payment_presets));
       if (mode === "replace") {
         for (const row of retained) {
           this.retireJobs(row.id);
@@ -639,6 +680,7 @@ export class Store {
           user_id,
           auth_mode,
           manual_catalog,
+          recharge_multiplier,
           ...metadata
         } = c;
         return [

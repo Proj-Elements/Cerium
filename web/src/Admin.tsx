@@ -2,6 +2,8 @@ import { useCallback, useEffect, useState, type FormEvent } from "react";
 import {
   Button,
   Card,
+  Checkbox,
+  CheckboxGroup,
   Input,
   Label,
   Modal,
@@ -33,10 +35,11 @@ function draft(site?: Site) {
     auth_mode: site?.auth_mode ?? "password",
     access_token: "",
     user_id: site?.user_id ? String(site.user_id) : "",
-    recharge_cny: site?.recharge_cny?.toString() ?? "",
-    recharge_usd: site?.recharge_usd?.toString() ?? "",
-    recharge_multiplier: site?.recharge_multiplier?.toString() ?? "",
-    payment_methods: site?.payment_methods.join(", ") ?? "",
+    recharge_cny:
+      site?.recharge_cny != null && site.recharge_usd
+        ? String(site.recharge_cny / site.recharge_usd)
+        : "",
+    payment_methods: site?.payment_methods ?? [],
     payment_note: site?.payment_note ?? "",
     enabled: site?.enabled ?? true,
     monitor_changes: site?.monitor_changes ?? true,
@@ -47,10 +50,12 @@ function Editor({
   site,
   close,
   saved,
+  paymentPresets,
 }: {
   site?: Site;
   close: () => void;
   saved: () => void;
+  paymentPresets: string[];
 }) {
   const [value, setValue] = useState(() => draft(site)),
     [busy, setBusy] = useState(false),
@@ -73,16 +78,8 @@ function Editor({
         user_id: tokenMode ? Number(value.user_id) : 0,
         recharge_cny:
           value.recharge_cny === "" ? null : Number(value.recharge_cny),
-        recharge_usd:
-          value.recharge_usd === "" ? null : Number(value.recharge_usd),
-        recharge_multiplier:
-          value.recharge_multiplier === ""
-            ? null
-            : Number(value.recharge_multiplier),
-        payment_methods: value.payment_methods
-          .split(/[,，]/)
-          .map((p) => p.trim())
-          .filter(Boolean),
+        recharge_usd: value.recharge_cny === "" ? null : 1,
+        payment_methods: value.payment_methods,
         manual_catalog:
           value.type === "others" ? { groups: JSON.parse(manual) } : null,
       };
@@ -143,33 +140,15 @@ function Editor({
                       ]}
                     />
                   </div>
-                  <Field
-                    label="站点 URL"
-                    value={value.url}
-                    onChange={(v) => update("url", v)}
-                    type="url"
-                    required
-                    placeholder="https://relay.example.com"
-                  />
                 </div>
-                <div className="automatic-icon">
-                  <SiteIcon
-                    site={{
-                      id: site?.id ?? "preview",
-                      url: value.url,
-                      type: value.type,
-                      enabled: Boolean(site?.enabled && site.url === value.url),
-                    }}
-                  />
-                  <div>
-                    <strong>站点图标，自动发现</strong>
-                    <p>
-                      独立发现并保存图标地址，后续同步不重新获取；失败时使用{" "}
-                      {value.type === "sub2api" ? "Sub2API" : "NewAPI"}{" "}
-                      默认图标。修改站点 URL 后才重新发现。
-                    </p>
-                  </div>
-                </div>
+                <Field
+                  label="站点 URL"
+                  value={value.url}
+                  onChange={(v) => update("url", v)}
+                  type="url"
+                  required
+                  placeholder="https://relay.example.com"
+                />
                 <Field
                   label="一句话简介"
                   value={value.description}
@@ -179,50 +158,61 @@ function Editor({
                 <div className="form-section-title">
                   <span>02</span>充值信息
                 </div>
-                <div className="recharge-fields">
-                  <Field
-                    label="支付 CNY"
-                    type="number"
-                    min="0.000001"
-                    step="any"
-                    value={value.recharge_cny}
-                    onChange={(v) => update("recharge_cny", v)}
-                    placeholder="10"
-                  />
-                  <span>=</span>
-                  <Field
-                    label="获得 USD 额度"
-                    type="number"
-                    min="0.000001"
-                    step="any"
-                    value={value.recharge_usd}
-                    onChange={(v) => update("recharge_usd", v)}
-                    placeholder="20"
-                  />
-                  <Field
-                    label="充值倍率 ×"
-                    type="number"
-                    min="0"
-                    step="any"
-                    value={value.recharge_multiplier}
-                    onChange={(v) => update("recharge_multiplier", v)}
-                    placeholder="2"
-                  />
-                </div>
-                <div className="form-grid">
-                  <Field
-                    label="充值方式（逗号分隔）"
-                    value={value.payment_methods}
-                    onChange={(v) => update("payment_methods", v)}
-                    placeholder="LDXP, 闲鱼, 易支付"
-                  />
-                  <Field
-                    label="充值说明（可选）"
-                    value={value.payment_note}
-                    onChange={(v) => update("payment_note", v)}
-                    placeholder="如手续费、起充金额"
-                  />
-                </div>
+                <TextField
+                  type="number"
+                  value={value.recharge_cny}
+                  onChange={(v) => update("recharge_cny", v)}
+                  variant="secondary"
+                  className="recharge-field"
+                >
+                  <Label>充值兑换（可选）</Label>
+                  <div className="recharge-fields">
+                    <Input min="0.000001" step="any" placeholder="如 0.5" />
+                    <span>CNY = 1 USD</span>
+                  </div>
+                </TextField>
+                <CheckboxGroup
+                  value={value.payment_methods}
+                  onChange={(v) => update("payment_methods", v)}
+                  isDisabled={busy}
+                  className="payment-methods-field"
+                >
+                  <Label>支付渠道（可多选）</Label>
+                  <div className="payment-options">
+                    {[
+                      ...new Set([
+                        ...paymentPresets,
+                        ...(site?.payment_methods ?? []),
+                      ]),
+                    ].map((method) => (
+                      <Checkbox
+                        key={method}
+                        value={method}
+                        variant="secondary"
+                        isDisabled={
+                          value.payment_methods.length >= 12 &&
+                          !value.payment_methods.includes(method)
+                        }
+                      >
+                        <Checkbox.Content>
+                          <Checkbox.Control>
+                            <Checkbox.Indicator />
+                          </Checkbox.Control>
+                          {method}
+                        </Checkbox.Content>
+                      </Checkbox>
+                    ))}
+                  </div>
+                  <p className="field-help">
+                    最多选择 12 项，可在「同步与数据」中添加或调整预设。
+                  </p>
+                </CheckboxGroup>
+                <Field
+                  label="充值说明（可选）"
+                  value={value.payment_note}
+                  onChange={(v) => update("payment_note", v)}
+                  placeholder="如手续费、起充金额"
+                />
                 <div className="form-section-title">
                   <span>03</span>
                   {value.type === "others" ? "手动分组" : "同步凭据"}
@@ -384,6 +374,7 @@ export default function Admin() {
   const [error, setError] = useState("");
   const [notice, setNotice] = useState("");
   const [interval, setIntervalValue] = useState(900);
+  const [paymentPresets, setPaymentPresets] = useState<string[]>([]);
   const [editing, setEditing] = useState<Site | "new" | null>(null);
   const [deleting, setDeleting] = useState<Site | null>(null);
   const [settingsOpen, setSettingsOpen] = useState(false);
@@ -400,6 +391,7 @@ export default function Admin() {
       setSites(data.sites);
       setChanges(data.changes ?? []);
       setIntervalValue(data.interval);
+      setPaymentPresets(data.payment_presets ?? []);
       setAuthed(true);
       setError("");
     } catch (e) {
@@ -710,7 +702,10 @@ export default function Admin() {
                                 )
                               }
                             >
-                              同步
+                              {site.status === "error" ||
+                              site.status === "retrying"
+                                ? "重新同步"
+                                : "同步"}
                             </Button>
                             <Button
                               size="sm"
@@ -855,6 +850,7 @@ export default function Admin() {
         <AdminSettings
           base={base}
           interval={interval}
+          paymentPresets={paymentPresets}
           siteCount={sites.length}
           close={() => setSettingsOpen(false)}
           unauthorized={() => setAuthed(false)}
@@ -867,6 +863,7 @@ export default function Admin() {
       {editing && (
         <Editor
           site={editing === "new" ? undefined : editing}
+          paymentPresets={paymentPresets}
           close={() => setEditing(null)}
           saved={() => {
             setNotice("已保存站点配置。");

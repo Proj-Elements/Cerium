@@ -16,6 +16,7 @@ import {
   site,
   syncInterval,
   text,
+  paymentPresets,
 } from "./validation.mjs";
 
 export const BACKUP_LIMIT = 64 << 20;
@@ -170,6 +171,9 @@ export function validateBackup(input) {
     exported_at: timestamp(input.exported_at, false),
     settings: {
       sync_interval_seconds: syncInterval(input.settings.sync_interval_seconds),
+      ...(Object.hasOwn(input.settings, "payment_presets")
+        ? { payment_presets: paymentPresets(input.settings.payment_presets) }
+        : {}),
     },
     sites,
     changes,
@@ -197,7 +201,7 @@ export async function serializeBackup(store, format) {
     const db = new DatabaseSync(path);
     try {
       db.exec(
-        "PRAGMA journal_mode=DELETE; DELETE FROM jobs; DELETE FROM settings WHERE key!='sync_interval_seconds';",
+        "PRAGMA journal_mode=DELETE; DELETE FROM jobs; DELETE FROM settings WHERE key NOT IN ('sync_interval_seconds','payment_presets');",
       );
       const insert = db.prepare("INSERT INTO settings(key,value) VALUES(?,?)");
       insert.run("backup_format", FORMAT);
@@ -262,7 +266,7 @@ export function parseBackup(bytes, format, defaultInterval = 900) {
     const settings = Object.fromEntries(
       db
         .prepare(
-          "SELECT key,value FROM settings WHERE key IN ('sync_interval_seconds','backup_format','backup_version','backup_exported_at') LIMIT 4",
+          "SELECT key,value FROM settings WHERE key IN ('sync_interval_seconds','payment_presets','backup_format','backup_version','backup_exported_at') LIMIT 5",
         )
         .all()
         .map((row) => [row.key, row.value]),
@@ -279,6 +283,9 @@ export function parseBackup(bytes, format, defaultInterval = 900) {
         sync_interval_seconds: Number(
           settings.sync_interval_seconds ?? defaultInterval,
         ),
+        ...(settings.payment_presets !== undefined
+          ? { payment_presets: JSON.parse(settings.payment_presets) }
+          : {}),
       },
       sites: db
         .prepare(
