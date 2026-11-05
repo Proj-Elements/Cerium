@@ -6,6 +6,7 @@
 }
 .admin-settings-dialog .modal__body,
 .sync-settings-form,
+.payment-settings-form,
 .backup-settings,
 .backup-import {
   display: flex;
@@ -20,6 +21,7 @@
   margin: 0;
 }
 .sync-settings-form > .button,
+.payment-settings-form > .button,
 .backup-settings > .button,
 .backup-import > .button {
   align-self: flex-start;
@@ -37,6 +39,14 @@
 }
 .backup-settings {
   margin-top: 16px;
+}
+.payment-settings-form {
+  margin-top: 16px;
+}
+.payment-settings-form .textarea {
+  width: 100%;
+  resize: vertical;
+  font-size: 13px;
 }
 .backup-settings .select-field .relay-select {
   width: 100%;

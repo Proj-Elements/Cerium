@@ -263,13 +263,12 @@ export function createApp(options = {}) {
           return send(res, 200, { ok: true });
         }
         if (path === `${base}/settings` && method === "GET")
-          return send(res, 200, { sync_interval_seconds: store.interval });
-        if (path === `${base}/settings` && method === "PUT")
           return send(res, 200, {
-            sync_interval_seconds: store.setInterval(
-              json(await body(req, 4096))?.sync_interval_seconds,
-            ),
+            sync_interval_seconds: store.interval,
+            payment_presets: store.paymentPresets,
           });
+        if (path === `${base}/settings` && method === "PUT")
+          return send(res, 200, store.setSettings(json(await body(req, 4096))));
         if (path === `${base}/data/export` && method === "POST") {
           const format = backupFormat(
               target.searchParams.get("format") ?? "json",
@@ -309,6 +308,7 @@ export function createApp(options = {}) {
             sites: store.sites(true),
             changes: store.changes(true),
             interval: store.interval,
+            payment_presets: store.paymentPresets,
           });
         const changeMatch = path
           .slice(base.length)
@@ -328,7 +328,7 @@ export function createApp(options = {}) {
         if (match) {
           const id = match[1];
           if (match[2] && method === "POST") {
-            store.queue(id);
+            store.queue(id, true);
             return send(res, 202, { queued: true });
           }
           if (!match[2] && method === "PUT")

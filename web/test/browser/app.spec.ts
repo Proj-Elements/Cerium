@@ -59,7 +59,7 @@ test("public directory, model prices, filters and responsive light/dark views", 
   expect(Math.abs(modelCard!.y - groupCard!.y)).toBeLessThan(2);
   await expect(dialog.locator(".detail-sheet .model-panel")).toHaveCount(0);
   await expect(
-    dialog.getByRole("cell", { name: "1.75", exact: true }),
+    dialog.getByRole("cell", { name: "$1.75 / 1M", exact: true }),
   ).toBeVisible();
   await page.screenshot({
     path: "../artifacts/redesign-detail-desktop.png",
@@ -181,17 +181,17 @@ test("reference prices, Lobe model icons and hidden dynamic expressions work acr
       has: page.getByTitle(model, { exact: true }),
     });
   const opus = row("claude-opus-5-5-thinking");
-  await expect(opus.locator(".price-number")).toHaveText(["4", "20"]);
+  await expect(opus.locator(".price-number")).toHaveText(["$4", "$20"]);
   await expect(opus.locator('[data-price-source="default"]')).toHaveCount(2);
   await expect(
     opus.getByRole("img", { name: "Anthropic / Claude" }),
   ).toBeVisible();
   const glm = row("z-ai/glm-5.3");
-  await expect(glm.locator(".price-number")).toHaveText(["1.4", "4.4"]);
+  await expect(glm.locator(".price-number")).toHaveText(["$1.4", "$4.4"]);
   await expect(glm.getByRole("img", { name: "Z.ai" })).toBeVisible();
   await expect(row("glm-5.3-flash").locator(".price-number")).toHaveText([
-    "0.15",
-    "0.5",
+    "$0.15",
+    "$0.5",
   ]);
   await expect(row("qwen3.8-27b").locator(".price-number")).toHaveText([
     "—",
@@ -200,10 +200,9 @@ test("reference prices, Lobe model icons and hidden dynamic expressions work acr
   await expect(
     row("qwen3.8-27b").getByRole("img", { name: "Qwen", exact: true }),
   ).toBeVisible();
-  await expect(row("gpt-5.2").locator(".price-number")).toHaveText([
-    "2.625",
-    "21",
-  ]);
+  await expect(
+    row("gpt-5.2").locator("td:not(:first-child) .price-number"),
+  ).toHaveText(["$2.625", "$21"]);
   await expect(
     row("gpt-5.2").getByRole("button", { name: /默认价格来源/ }),
   ).toHaveCount(0);
@@ -233,7 +232,7 @@ test("reference prices, Lobe model icons and hidden dynamic expressions work acr
     opus.getByRole("button", { name: /默认价格来源/ }),
   ).toBeFocused();
   await expect(page.getByRole("tooltip")).toContainText("保守归一化匹配");
-  await expect(page.getByRole("tooltip")).toContainText("未乘分组或充值倍率");
+  await expect(page.getByRole("tooltip")).toContainText("未乘分组倍率");
   await page.mouse.move(0, 0);
   await panel.getByRole("textbox").focus();
   await expect(page.getByRole("tooltip")).toHaveCount(0);
@@ -304,7 +303,7 @@ test("default-price loading failures leave upstream prices usable", async ({
   await page.getByRole("button", { name: /default/ }).click();
   await expect(page.getByText("默认价暂不可用", { exact: true })).toBeVisible();
   await expect(
-    page.getByRole("cell", { name: "1.75", exact: true }),
+    page.getByRole("cell", { name: "$1.75 / 1M", exact: true }),
   ).toBeVisible();
 });
 

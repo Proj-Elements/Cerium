@@ -1,15 +1,7 @@
 import { lookup } from "node:dns/promises";
 import { BlockList, isIP } from "node:net";
-import { request as httpRequest } from "node:http";
-import { request as httpsRequest } from "node:https";
 import { favicon, HttpError } from "./validation.mjs";
-
-const requestURL = (url, options, callback) =>
-  (url.protocol === "https:" ? httpsRequest : httpRequest)(
-    url,
-    options,
-    callback,
-  );
+import { createIconRequest } from "./icon-transport.mjs";
 
 const globalIPv6 = new BlockList();
 globalIPv6.addSubnet("2000::", 3, "ipv6");
@@ -48,7 +40,12 @@ export function isPublicAddress(address) {
   return false;
 }
 
-async function publicTarget(value, deadline, lookupAddress) {
+function isFakeIP(address) {
+  const [a, b] = address.split(".").map(Number);
+  return isIP(address) === 4 && a === 198 && (b === 18 || b === 19);
+}
+
+async function publicTarget(value, deadline, transport) {
   deadline.throwIfAborted();
   const url = new URL(value);
   if (
@@ -59,6 +56,8 @@ async function publicTarget(value, deadline, lookupAddress) {
   )
     throw new Error("Unsafe icon origin");
   const hostname = url.hostname.replace(/^\[|\]$/g, "");
+  if (isIP(hostname) && !isPublicAddress(hostname))
+    throw new Error("Icon discovery only supports public addresses");
   let abort;
   const expired = new Promise((_, reject) => {
     abort = () => reject(deadline.reason);
@@ -67,7 +66,7 @@ async function publicTarget(value, deadline, lookupAddress) {
   let addresses;
   try {
     addresses = await Promise.race([
-      lookupAddress(hostname, { all: true }),
+      transport.lookup(hostname, { all: true }),
       expired,
     ]);
   } finally {
@@ -75,7 +74,11 @@ async function publicTarget(value, deadline, lookupAddress) {
   }
   if (
     !addresses.length ||
-    addresses.some(({ address }) => !isPublicAddress(address))
+    addresses.some(
+      ({ address }) =>
+        !isPublicAddress(address) &&
+        !(transport.allowFakeIP && !isIP(hostname) && isFakeIP(address)),
+    )
   )
     throw new Error("Icon discovery only supports public addresses");
   return { url, address: addresses[0] };
@@ -99,6 +102,7 @@ async function readResource(
       url,
       {
         signal: deadline,
+        targetAddress: address.address,
         lookup: (_hostname, options, callback) => {
           if (options.all) callback(null, [address]);
           else callback(null, address.address, address.family);
@@ -127,7 +131,7 @@ async function readResource(
           } catch (error) {
             return reject(error);
           }
-          publicTarget(next, deadline, transport.lookup).then(
+          publicTarget(next, deadline, transport).then(
             (next) =>
               readResource(next, deadline, transport, icon, redirects + 1).then(
                 resolve,
@@ -225,12 +229,20 @@ function isIcon(body, type) {
 export function createIconResolver(options = {}) {
   const transport = {
     lookup: options.lookup ?? lookup,
-    request: options.request ?? requestURL,
+    request:
+      options.request ??
+      createIconRequest(
+        options.proxyURL ?? process.env.CERIUM_OUTBOUND_PROXY_URL,
+      ),
+    // Only a trusted TUN proxy can make benchmark-range DNS answers routable.
+    // Literal IPs, metadata endpoints and all other private ranges stay blocked.
+    allowFakeIP:
+      options.allowFakeIP ?? process.env.CERIUM_ICON_ALLOW_FAKE_IP === "true",
   };
   return async (site) => {
     try {
-      const pageDeadline = AbortSignal.timeout(4500),
-        target = await publicTarget(site.url, pageDeadline, transport.lookup);
+      const pageDeadline = AbortSignal.timeout(10000),
+        target = await publicTarget(site.url, pageDeadline, transport);
       let page;
       try {
         page = await readResource(target, pageDeadline, transport);
@@ -259,19 +271,15 @@ export function createIconResolver(options = {}) {
           ].map((path) => new URL(path, directory).href),
         ]),
       ].filter((candidate) => candidate.length <= 2048);
-      const probeDeadline = AbortSignal.timeout(4500);
+      const probeDeadline = AbortSignal.timeout(10000);
       for (const candidate of icons) {
         if (probeDeadline.aborted) break;
         const deadline = AbortSignal.any([
           probeDeadline,
-          AbortSignal.timeout(1250),
+          AbortSignal.timeout(5000),
         ]);
         try {
-          const target = await publicTarget(
-              candidate,
-              deadline,
-              transport.lookup,
-            ),
+          const target = await publicTarget(candidate, deadline, transport),
             image = await readResource(target, deadline, transport, true);
           if (isIcon(image.body, image.type))
             return { icons, selected: candidate };
@@ -297,7 +305,13 @@ export function createPersistentIconResolver(
       const row = store.row(id),
         config = row && JSON.parse(row.config);
       if (!config?.enabled) throw new HttpError(404, "Site not found");
-      if (row.favicon !== null) return result(JSON.parse(row.favicon));
+      const previous = row.favicon === null ? null : JSON.parse(row.favicon);
+      if (
+        previous &&
+        (previous.selected ||
+          Date.now() - Date.parse(previous.checked_at) < 15 * 60000)
+      )
+        return result(previous);
       const key = `${id}:${row.revision}`;
       let promise = pending.get(key);
       if (!promise) {
@@ -307,23 +321,31 @@ export function createPersistentIconResolver(
               ? { icons: [config.icon], selected: config.icon }
               : discover({ url: config.url }),
           )
-          .then((value) =>
-            favicon(
+          .then((value) => {
+            const selected = value.selected ?? value.icons[0] ?? "";
+            return favicon(
               {
                 url: config.url,
                 icons: value.icons,
-                selected: value.selected ?? value.icons[0] ?? "",
+                selected,
+                ...(!selected ? { checked_at: new Date().toISOString() } : {}),
               },
               config.url,
-            ),
-          )
-          .catch(() => ({ url: config.url, icons: [], selected: "" }))
+            );
+          })
+          .catch(() => ({
+            url: config.url,
+            icons: [],
+            selected: "",
+            checked_at: new Date().toISOString(),
+          }))
           .finally(() => pending.delete(key));
         pending.set(key, promise);
       }
       const state = await promise;
       // A delayed discovery must not overwrite edited, imported or deleted sites.
-      if (store.saveFavicon(id, row.revision, state)) return result(state);
+      if (store.saveFavicon(id, row.revision, state, row.favicon))
+        return result(state);
     }
     throw new HttpError(409, "Site changed during icon discovery; try again");
   };

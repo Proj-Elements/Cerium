@@ -530,6 +530,30 @@ test("settings and both backup formats require authentication and same-origin CS
     90,
   );
   assert.equal((await (await f.request("/api/sites")).json()).interval, 90);
+  const presets = ["云猫寄售", "链动小铺", "站点直充", "银行卡"];
+  const updated = await f.request(f.base + "/settings", "PUT", {
+    payment_presets: presets,
+  });
+  assert.equal(updated.status, 200);
+  assert.deepEqual((await updated.json()).payment_presets, presets);
+  const adminDirectory = await (await f.request(f.base + "/sites")).json();
+  assert.deepEqual(adminDirectory.payment_presets, presets);
+  assert.equal(adminDirectory.interval, 90);
+  assert.equal(
+    (await (await f.request("/api/sites")).json()).payment_presets,
+    undefined,
+  );
+  assert.equal(
+    (
+      await f.request(f.base + "/settings", "PUT", {
+        payment_presets: null,
+        sync_interval_seconds: 120,
+      })
+    ).status,
+    400,
+  );
+  assert.equal(f.store.interval, 90);
+  assert.deepEqual(f.store.paymentPresets, presets);
   assert.equal(
     (await (await f.request(f.base + "/sites")).json()).interval,
     90,

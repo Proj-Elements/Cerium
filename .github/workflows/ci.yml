@@ -22,6 +22,7 @@ jobs:
     timeout-minutes: 5
     outputs:
       node_tests: ${{ steps.select.outputs.node_tests }}
+      go: ${{ steps.select.outputs.go }}
       solver: ${{ steps.select.outputs.solver }}
     steps:
       - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
@@ -61,6 +62,23 @@ jobs:
           process.exit(result.status ?? 1);
           JS
 
+  go:
+    name: Sync transport and bridge regressions
+    needs: changes
+    if: needs.changes.outputs.go == 'true'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
+        with:
+          persist-credentials: false
+      - uses: actions/setup-go@4dc6199c7b1a012772edbd06daecab0f50c9053c # v6.1.0
+        with:
+          go-version: "1.26.7"
+          cache: false
+      - name: Run affected HTTP, proxy, callback and bridge contracts
+        run: go test -race . -run 'Test(ConfiguredOutboundProxy|InvalidOutboundProxy|ConnectionRetry|HTTPEnvelope|APIRequests|HTTPResponse|URLPrefix|Webhook|Bridge|Sub2APITurnstile|Turnstile)' -count=1
+
   solver:
     name: Solver image and polling regressions
     needs: changes
@@ -82,7 +100,7 @@ jobs:
 
   complete:
     name: Focused checks passed
-    needs: [changes, node, solver]
+    needs: [changes, node, go, solver]
     if: always()
     runs-on: ubuntu-24.04
     timeout-minutes: 2
@@ -92,6 +110,8 @@ jobs:
           SELECTION_RESULT: ${{ needs.changes.result }}
           NODE_TESTS: ${{ needs.changes.outputs.node_tests }}
           NODE_RESULT: ${{ needs.node.result }}
+          GO_SELECTED: ${{ needs.changes.outputs.go }}
+          GO_RESULT: ${{ needs.go.result }}
           SOLVER_SELECTED: ${{ needs.changes.outputs.solver }}
           SOLVER_RESULT: ${{ needs.solver.result }}
         run: |
@@ -100,6 +120,11 @@ jobs:
             test "$NODE_RESULT" = success
           else
             test "$NODE_RESULT" = skipped
+          fi
+          if test "$GO_SELECTED" = true; then
+            test "$GO_RESULT" = success
+          else
+            test "$GO_RESULT" = skipped
           fi
           if test "$SOLVER_SELECTED" = true; then
             test "$SOLVER_RESULT" = success

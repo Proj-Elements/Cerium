@@ -140,7 +140,7 @@ function DefaultHint({
         {match.kind === "exact" ? "完整型号匹配" : "保守归一化匹配"} ·{" "}
         {match.price.provider}
       </span>
-      <span>基础 USD 单价，未乘分组或充值倍率，不代表本站实际收费。</span>
+      <span>基础 USD 单价，未乘分组倍率，不代表本站实际收费。</span>
       {match.price.tiered && (
         <span>长上下文等阶梯价格可能不同，此处仅展示基础档位。</span>
       )}
@@ -179,6 +179,22 @@ export function ModelPriceBadges({
   );
 }
 
+export function PriceAmount({
+  value,
+  unit = "1M",
+}: {
+  value: number | null | undefined;
+  unit?: string;
+}) {
+  if (value == null) return <span className="price-number">—</span>;
+  return (
+    <span className="price-amount">
+      <span className="price-number">${n(value)}</span>
+      <span className="price-unit">/ {unit}</span>
+    </span>
+  );
+}
+
 export function ModelPriceCells({
   site,
   match,
@@ -190,7 +206,11 @@ export function ModelPriceCells({
   if (price.mode === "request")
     return (
       <td colSpan={2} className="price-note">
-        {price.request == null ? "未公开按次价格" : `$${n(price.request)} / 次`}
+        {price.request == null ? (
+          "未公开按次价格"
+        ) : (
+          <PriceAmount value={price.request} unit="次" />
+        )}
       </td>
     );
   return (
@@ -204,7 +224,7 @@ export function ModelPriceCells({
               : "unknown"
         }
       >
-        <span className="price-number">{n(price.input)}</span>
+        <PriceAmount value={price.input} />
       </td>
       <td
         data-price-source={
@@ -215,7 +235,7 @@ export function ModelPriceCells({
               : "unknown"
         }
       >
-        <span className="price-number">{n(price.output)}</span>
+        <PriceAmount value={price.output} />
       </td>
     </>
   );

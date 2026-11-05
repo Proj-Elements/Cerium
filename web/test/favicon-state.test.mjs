@@ -124,7 +124,7 @@ test("coalesces discovery and preserves selection through sync, edits, hiding an
   );
 });
 
-test("saves an unavailable-icon fallback without hourly or restart retries", async (t) => {
+test("caches unavailable icons briefly and retries after the network recovers", async (t) => {
   const fixture = storage(t),
     id = fixture.store.save(config);
   let calls = 0;
@@ -140,11 +140,49 @@ test("saves an unavailable-icon fallback without hourly or restart retries", asy
     url: config.url,
     icons: [],
     selected: "",
+    checked_at: JSON.parse(fixture.store.row(id).favicon).checked_at,
   });
+  assert.ok(
+    Number.isFinite(
+      Date.parse(JSON.parse(fixture.store.row(id).favicon).checked_at),
+    ),
+  );
   assert.deepEqual(
     await createPersistentIconResolver(fixture.restart(), discover)(id),
     { icons: [] },
   );
+  assert.equal(calls, 1);
+  const row = fixture.store.row(id),
+    state = JSON.parse(row.favicon);
+  state.checked_at = new Date(Date.now() - 16 * 60000).toISOString();
+  fixture.store.db
+    .prepare("UPDATE sites SET favicon=? WHERE id=?")
+    .run(JSON.stringify(state), id);
+  assert.deepEqual(
+    await createPersistentIconResolver(fixture.store, () => {
+      calls++;
+      return savedIcon;
+    })(id),
+    { icons: [savedIcon.selected] },
+  );
+  assert.equal(calls, 2);
+});
+
+test("old permanently cached failures are rediscovered once without changing selected icons", async (t) => {
+  const { store } = storage(t),
+    id = store.save(config);
+  store.saveFavicon(id, store.row(id).revision, {
+    url: config.url,
+    icons: [],
+    selected: "",
+  });
+  let calls = 0;
+  const resolver = createPersistentIconResolver(store, () => {
+    calls++;
+    return savedIcon;
+  });
+  assert.deepEqual(await resolver(id), { icons: [savedIcon.selected] });
+  assert.deepEqual(await resolver(id), { icons: [savedIcon.selected] });
   assert.equal(calls, 1);
 });
 

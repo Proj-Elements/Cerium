@@ -110,7 +110,8 @@ test("readable model names retain raw IDs and keep badges beside names on deskto
   const opus = panel.getByTitle("claude-opus-5-5-thinking", { exact: true });
   await expect(opus).toHaveText("Claude Opus 5.5 Thinking");
   const row = panel.locator('tr[data-model-id="claude-opus-5-5-thinking"]');
-  await expect(row.locator(".price-number")).toHaveText(["4", "20"]);
+  await expect(row.locator(".price-number")).toHaveText(["$4", "$20"]);
+  await expect(row.locator(".price-unit")).toHaveText(["/ 1M", "/ 1M"]);
   await expect(row.locator(".model-identity .price-badge")).toHaveCount(2);
   await expect(row.locator("td:not(:first-child) .price-badge")).toHaveCount(0);
 
@@ -156,6 +157,37 @@ test("readable model names retain raw IDs and keep badges beside names on deskto
   await expect(opus).toBeVisible();
   await panel.getByRole("textbox").fill("claude-opus-5-5-thinking");
   await expect(opus).toBeVisible();
+});
+
+test("descriptions stay in details only and empty descriptions have no placeholder", async ({
+  page,
+}) => {
+  await page.goto("/");
+  await expect(page.locator(".relay-card .site-description")).toHaveCount(0);
+  await expect(page.locator(".relay-card")).not.toContainText(site.description);
+  await page.getByRole("button", { name: `查看${site.name}详情` }).click();
+  await expect(page.locator(".detail-description")).toHaveText(
+    site.description,
+  );
+  await page.getByRole("button", { name: "关闭站点详情" }).click();
+  await page.route("**/api/sites", (route) =>
+    route.fulfill({
+      json: {
+        sites: [{ ...site, description: "" }],
+        interval: 900,
+        changes: [],
+      },
+    }),
+  );
+  await page.reload();
+  await page.getByRole("button", { name: `查看${site.name}详情` }).click();
+  await expect(page.locator(".detail-description")).toHaveCount(0);
+  await expect(
+    page.getByText("查看本站公开分组与倍率。", { exact: true }),
+  ).toHaveCount(0);
+  await expect(
+    page.getByText("一个值得发现的 AI 入口，点击了解更多。", { exact: true }),
+  ).toHaveCount(0);
 });
 
 test("multiplier activity uses one name and green/red semantic badges and values", async ({

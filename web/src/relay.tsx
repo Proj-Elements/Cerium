@@ -46,7 +46,12 @@ export function SiteIcon({
     setSources([]);
     setIndex(0);
     if (site.enabled)
-      void api<{ icons: string[] }>(`/api/sites/${site.id}/icon`)
+      void api<{ icons: string[] }>(
+        `/api/sites/${site.id}/icon`,
+        "GET",
+        undefined,
+        25000,
+      )
         .then((data) => {
           if (active) {
             setSources(data.icons);

@@ -174,6 +174,52 @@ test("validation, unchanged password, manual sites and disabled visibility", asy
   assert.equal(data.sites[0].status, "manual");
   assert.equal(data.sites[0].catalog.groups[0].multiplier, 0);
 });
+test("manual sync advances a backed-off job without replaying a running job", async (t) => {
+  const f = await fixture(t);
+  await f.login();
+  const id = f.store.save(config),
+    job = f.store.nextJob();
+  f.store.retry(job, "Worker temporarily unreachable");
+  assert.equal(f.store.nextJob(), undefined);
+  const before = f.store.db
+    .prepare("SELECT * FROM jobs WHERE id=?")
+    .get(job.id);
+  assert.equal(before.state, "pending");
+  const response = await f.request(`${f.base}/sites/${id}/sync`, "POST");
+  assert.equal(response.status, 202);
+  const next = f.store.nextJob();
+  assert.equal(next?.id, job.id);
+  assert.equal(next.payload, before.payload);
+  assert.equal(f.store.db.prepare("SELECT COUNT(*) AS n FROM jobs").get().n, 1);
+  await f.request(`${f.base}/sites/${id}/sync`, "POST");
+  assert.equal(f.store.nextJob(), undefined);
+  assert.equal(
+    f.store.db.prepare("SELECT state FROM jobs WHERE id=?").get(job.id).state,
+    "running",
+  );
+});
+test("a fresh manual retry takes status precedence over the last failed attempt", async (t) => {
+  const f = await fixture(t);
+  await f.login();
+  const id = f.store.save(config),
+    job = f.store.nextJob();
+  f.store.accept({
+    job_id: job.id,
+    site_id: id,
+    config_revision: job.revision,
+    url: config.url,
+    type: config.type,
+    checked_at: new Date().toISOString(),
+    error: "Provider temporarily unavailable",
+  });
+  assert.equal(f.store.sites(true)[0].status, "error");
+  await f.request(`${f.base}/sites/${id}/sync`, "POST");
+  assert.equal(f.store.sites(true)[0].status, "pending");
+  assert.equal(
+    f.store.sites(true)[0].error,
+    "Provider temporarily unavailable",
+  );
+});
 test("change announcements require successful comparisons and authenticated moderation", async (t) => {
   const f = await fixture(t);
   await f.login();

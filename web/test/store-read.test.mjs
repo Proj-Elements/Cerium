@@ -67,7 +67,7 @@ test("directory reads preserve ordering, visibility, job selection and status pr
       { expected: "pending" },
       { expected: "pending", running: true },
       { expected: "retrying", retry: true },
-      { expected: "error", error: "Saved failure", retry: true },
+      { expected: "retrying", error: "Saved failure", retry: true },
       { expected: "waiting", done: true },
       { expected: "ok", done: true, age: 1000 },
       { expected: "stale", done: true, age: 3600000 },

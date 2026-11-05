@@ -12,6 +12,12 @@ export function syncInterval(value) {
     fail("Sync interval must be an integer between 60 and 31536000 seconds");
   return value;
 }
+export const DEFAULT_PAYMENT_PRESETS = ["云猫寄售", "链动小铺", "站点直充"];
+export function paymentPresets(value) {
+  if (!Array.isArray(value) || value.length > 32)
+    fail("Payment presets must be an array of at most 32 names");
+  return [...new Set(value.map((name) => text(name, 40, true)))];
+}
 export function text(value, max = 200, required = false) {
   if (
     typeof value !== "string" ||
@@ -85,7 +91,19 @@ export function favicon(input, siteURL) {
     (selected && !icons.includes(selected))
   )
     fail("Selected favicon must be one of the unique candidates");
-  return { url: siteURL, icons, selected };
+  if (
+    input.checked_at !== undefined &&
+    (typeof input.checked_at !== "string" ||
+      !Number.isFinite(Date.parse(input.checked_at)) ||
+      Date.parse(input.checked_at) > Date.now() + 300000)
+  )
+    fail("Invalid favicon discovery timestamp");
+  return {
+    url: siteURL,
+    icons,
+    selected,
+    ...(input.checked_at !== undefined ? { checked_at: input.checked_at } : {}),
+  };
 }
 export function catalog(input, scope = "public") {
   if (
@@ -216,6 +234,8 @@ export function site(input, previous) {
     (cny !== null && (cny <= 0 || usd <= 0))
   )
     fail("Recharge CNY and USD must both be positive");
+  const rechargeRate = cny === null ? null : number(cny / usd, false);
+  if (rechargeRate === 0) fail("Recharge exchange rate must be positive");
   return {
     name: text(input.name, 100, true),
     url: url(input.url),
@@ -227,9 +247,9 @@ export function site(input, previous) {
     user_id,
     icon: url(input.icon, true),
     description: text(input.description ?? "", 600),
-    recharge_multiplier: number(input.recharge_multiplier),
-    recharge_cny: cny,
-    recharge_usd: usd,
+    // Accept old recharge pairs while keeping a single CNY price for one USD.
+    recharge_cny: rechargeRate,
+    recharge_usd: usd === null ? null : 1,
     payment_methods: [
       ...new Set(input.payment_methods.map((m) => text(m, 40, true))),
     ],

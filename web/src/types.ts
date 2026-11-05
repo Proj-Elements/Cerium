@@ -31,7 +31,6 @@ export type Site = {
   description: string;
   enabled: boolean;
   monitor_changes: boolean;
-  recharge_multiplier: number | null;
   recharge_cny: number | null;
   recharge_usd: number | null;
   payment_methods: string[];
@@ -74,4 +73,5 @@ export type Directory = {
   sites: Site[];
   changes: ChangeNotice[];
   interval: number;
+  payment_presets?: string[];
 };

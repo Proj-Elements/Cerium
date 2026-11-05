@@ -10,7 +10,9 @@ NODE_TESTS = (
     "web/test/admin-data.test.mjs",
     "web/test/changes.test.mjs",
     "web/test/favicon-state.test.mjs",
+    "web/test/icon-transport.test.mjs",
     "web/test/icons.test.mjs",
+    "web/test/payment-presets.test.mjs",
     "web/test/server.test.mjs",
     "web/test/store-read.test.mjs",
     "web/test/validation.test.mjs",
@@ -35,9 +37,24 @@ def select_checks(paths):
             tests.update(NODE_TESTS)
         elif path.startswith("web/test/") and path.endswith(".test.mjs"):
             tests.add(path)
+        elif path == "web/test/fixtures/icon-tls.mjs":
+            tests.add("web/test/icon-transport.test.mjs")
         elif path == "web/src/group-preview.ts":
             tests.add("web/test/group-preview.test.mjs")
     return sorted(tests), solver
+
+
+def select_go(paths):
+    """Run the changed sync transport and its bridge/callback dependents only."""
+    return any(
+        path in (
+            "client.go", "client_test.go", "transport.go", "webhook.go",
+            "bridge.go", "bridge_test.go", "turnstile.go", "turnstile_test.go", "go.mod", "go.sum", "Dockerfile",
+            "compose.yaml", ".github/workflows/ci.yml",
+        )
+        or path.startswith(".github/scripts/")
+        for path in paths
+    )
 
 
 def changed_paths(event_name, event, git):
@@ -73,9 +90,11 @@ def main():
 
     paths = changed_paths(os.environ["GITHUB_EVENT_NAME"], event, git)
     tests, solver = select_checks(paths)
-    print(json.dumps({"changed_files": paths, "node_tests": tests, "solver": solver}))
+    go = select_go(paths)
+    print(json.dumps({"changed_files": paths, "node_tests": tests, "go": go, "solver": solver}))
     with open(os.environ["GITHUB_OUTPUT"], "a", encoding="utf-8") as output:
         output.write("node_tests=" + json.dumps(tests) + "\n")
+        output.write("go=" + str(go).lower() + "\n")
         output.write("solver=" + str(solver).lower() + "\n")
 
 

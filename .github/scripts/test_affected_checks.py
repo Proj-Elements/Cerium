@@ -4,12 +4,18 @@ import subprocess
 import unittest
 from unittest.mock import Mock
 
-from affected_checks import NODE_TESTS, changed_paths, select_checks
+from affected_checks import NODE_TESTS, changed_paths, select_checks, select_go
 
 
 class SelectionTests(unittest.TestCase):
     def test_documents_do_not_run_application_suites(self):
         self.assertEqual(select_checks(["README.md", "solver/README.md"]), ([], False))
+        self.assertFalse(select_go(["README.md", "solver/README.md"]))
+
+    def test_transport_changes_select_focused_go_regressions(self):
+        for path in ["transport.go", "client.go", "client_test.go", "webhook.go", "bridge_test.go", "turnstile.go", "turnstile_test.go", "compose.yaml", ".github/workflows/ci.yml"]:
+            self.assertTrue(select_go([path]))
+        self.assertFalse(select_go(["web/src/Catalog.tsx", "pricing.go"]))
 
     def test_changed_owners_include_deleted_paths(self):
         tests, solver = select_checks(
@@ -21,8 +27,11 @@ class SelectionTests(unittest.TestCase):
 
     def test_ci_changes_validate_every_declared_job(self):
         tests, solver = select_checks([".github/workflows/ci.yml"])
-        self.assertEqual(len(tests), 8)
+        self.assertEqual(len(tests), 10)
         self.assertTrue(solver)
+
+    def test_icon_tls_fixture_selects_its_owning_transport_tests(self):
+        self.assertEqual(select_checks(["web/test/fixtures/icon-tls.mjs"]), (["web/test/icon-transport.test.mjs"], False))
 
     def test_pull_request_uses_target_merge_base(self):
         git = Mock(side_effect=["merge-base\n", "web/server/store.mjs\0"])

@@ -8,6 +8,8 @@ import {
   favicon,
   HttpError,
   syncInterval,
+  paymentPresets,
+  DEFAULT_PAYMENT_PRESETS,
 } from "./validation.mjs";
 import { compareCatalogs } from "./changes.mjs";
 import { validateBackup, siteIdentity } from "./backup.mjs";
@@ -49,6 +51,9 @@ export class Store {
       .prepare("INSERT OR IGNORE INTO settings VALUES(?,?)")
       .run("sync_interval_seconds", String(syncInterval(interval)));
     syncInterval(this.interval);
+    this.db
+      .prepare("INSERT OR IGNORE INTO settings VALUES(?,?)")
+      .run("payment_presets", JSON.stringify(DEFAULT_PAYMENT_PRESETS));
     this.db.exec("UPDATE jobs SET state='pending' WHERE state='running'");
   }
   get interval() {
@@ -75,12 +80,44 @@ export class Store {
   setInterval(value) {
     return this.transaction(() => this.writeInterval(value));
   }
+  get paymentPresets() {
+    return JSON.parse(
+      this.db
+        .prepare("SELECT value FROM settings WHERE key='payment_presets'")
+        .get().value,
+    );
+  }
+  setSettings(input) {
+    const interval =
+      input.sync_interval_seconds === undefined
+        ? undefined
+        : syncInterval(input.sync_interval_seconds);
+    const presets = Object.hasOwn(input, "payment_presets")
+      ? paymentPresets(input.payment_presets)
+      : undefined;
+    if (interval === undefined && presets === undefined)
+      throw new HttpError(400, "No supported settings supplied");
+    return this.transaction(() => {
+      if (interval !== undefined) this.writeInterval(interval);
+      if (presets !== undefined)
+        this.db
+          .prepare("UPDATE settings SET value=? WHERE key='payment_presets'")
+          .run(JSON.stringify(presets));
+      return {
+        sync_interval_seconds: this.interval,
+        payment_presets: this.paymentPresets,
+      };
+    });
+  }
   exportData() {
     return {
       format: "cerium-web-backup",
       version: 1,
       exported_at: new Date().toISOString(),
-      settings: { sync_interval_seconds: this.interval },
+      settings: {
+        sync_interval_seconds: this.interval,
+        payment_presets: this.paymentPresets,
+      },
       sites: this.db
         .prepare("SELECT * FROM sites ORDER BY rowid")
         .all()
@@ -151,6 +188,10 @@ export class Store {
         if (identity !== null) identities.add(identity);
       }
       this.writeInterval(data.settings.sync_interval_seconds);
+      if (data.settings.payment_presets !== undefined)
+        this.db
+          .prepare("UPDATE settings SET value=? WHERE key='payment_presets'")
+          .run(JSON.stringify(data.settings.payment_presets));
       if (mode === "replace") {
         for (const row of retained) {
           this.retireJobs(row.id);
@@ -268,17 +309,18 @@ export class Store {
   row(id) {
     return this.db.prepare("SELECT * FROM sites WHERE id=?").get(id);
   }
-  saveFavicon(id, revision, input) {
+  saveFavicon(id, revision, input, previous = null) {
     const row = this.row(id);
-    if (!row || row.revision !== revision || row.favicon !== null) return false;
+    if (!row || row.revision !== revision || row.favicon !== previous)
+      return false;
     const state = favicon(input, JSON.parse(row.config).url);
     if (!state) throw new HttpError(400, "Expected saved favicon discovery");
     return Boolean(
       this.db
         .prepare(
-          "UPDATE sites SET favicon=? WHERE id=? AND revision=? AND favicon IS NULL",
+          "UPDATE sites SET favicon=? WHERE id=? AND revision=? AND favicon IS ?",
         )
-        .run(JSON.stringify(state), id, revision).changes,
+        .run(JSON.stringify(state), id, revision, previous).changes,
     );
   }
   enqueue(row, operation = "sync") {
@@ -414,19 +456,27 @@ export class Store {
       this.db.prepare("DELETE FROM sites WHERE id=?").run(id);
     });
   }
-  queue(id) {
+  queue(id, manual = false) {
     const row = this.row(id);
     if (!row) throw new HttpError(404, "Site not found");
     if (JSON.parse(row.config).type === "others")
       throw new HttpError(400, "Manual sites do not use a provider");
-    if (
-      this.db
-        .prepare(
-          "SELECT id FROM jobs WHERE site_id=? AND revision=? AND state IN ('pending','running')",
-        )
-        .get(id, row.revision)
-    )
+    const job = this.db
+      .prepare(
+        "SELECT id,state FROM jobs WHERE site_id=? AND revision=? AND state IN ('pending','running')",
+      )
+      .get(id, row.revision);
+    if (job) {
+      // Redelivery must reuse the same job ID so a saved Go result cannot rotate
+      // tokens again. A manual retry only shortens the pending job's backoff.
+      if (manual && job.state === "pending")
+        this.db
+          .prepare(
+            "UPDATE jobs SET due=?,error=NULL WHERE id=? AND state='pending'",
+          )
+          .run(Date.now(), job.id);
       return;
+    }
     this.enqueue(row);
   }
   schedule() {
@@ -630,6 +680,7 @@ export class Store {
           user_id,
           auth_mode,
           manual_catalog,
+          recharge_multiplier,
           ...metadata
         } = c;
         return [
@@ -642,12 +693,12 @@ export class Store {
             status:
               c.type === "others"
                 ? "manual"
-                : row.error
-                  ? "error"
-                  : job
-                    ? job.attempts > 0 && job.error
-                      ? "retrying"
-                      : "pending"
+                : job
+                  ? job.attempts > 0 && job.error
+                    ? "retrying"
+                    : "pending"
+                  : row.error
+                    ? "error"
                     : !row.snapshot
                       ? "waiting"
                       : now - Date.parse(row.fetched_at) > interval * 3000
