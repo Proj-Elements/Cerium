@@ -13,6 +13,7 @@ import {
 } from "./validation.mjs";
 import { compareCatalogs } from "./changes.mjs";
 import { validateBackup, siteIdentity } from "./backup.mjs";
+import { iconType } from "./icon-content.mjs";
 
 export class Store {
   constructor(path, interval = 900) {
@@ -34,13 +35,21 @@ export class Store {
         checked_at TEXT NOT NULL, previous_checked_at TEXT, details TEXT NOT NULL,
         dismissed INTEGER NOT NULL DEFAULT 0);
       CREATE INDEX IF NOT EXISTS changes_recent ON catalog_changes(checked_at DESC);`);
-    if (
-      !this.db
-        .prepare("PRAGMA table_info(sites)")
-        .all()
-        .some((column) => column.name === "favicon")
-    )
-      this.db.exec("ALTER TABLE sites ADD COLUMN favicon TEXT");
+    this.transaction(() => {
+      const columns = new Set(
+        this.db
+          .prepare("PRAGMA table_info(sites)")
+          .all()
+          .map((column) => column.name),
+      );
+      for (const [name, type] of [
+        ["favicon", "TEXT"],
+        ["favicon_blob", "BLOB"],
+        ["favicon_type", "TEXT"],
+      ])
+        if (!columns.has(name))
+          this.db.exec(`ALTER TABLE sites ADD COLUMN ${name} ${type}`);
+    });
     this.db
       .prepare("INSERT OR IGNORE INTO settings VALUES(?,?)")
       .run("admin_path", `/manage-${randomBytes(18).toString("hex")}`);
@@ -131,6 +140,12 @@ export class Store {
           error: row.error,
           warnings: JSON.parse(row.warnings || "[]"),
           favicon: row.favicon == null ? null : JSON.parse(row.favicon),
+          favicon_cache: row.favicon_blob
+            ? {
+                type: row.favicon_type,
+                data: Buffer.from(row.favicon_blob).toString("base64"),
+              }
+            : null,
         })),
       changes: this.db
         .prepare("SELECT * FROM catalog_changes ORDER BY checked_at,rowid")
@@ -231,11 +246,11 @@ export class Store {
             .run(entry.id);
         this.db
           .prepare(
-            `INSERT INTO sites(id,revision,config,snapshot,fetched_at,last_checked,error,warnings,next_sync,favicon)
-             VALUES(?,?,?,?,?,?,?,?,?,?) ON CONFLICT(id) DO UPDATE SET revision=excluded.revision,
+            `INSERT INTO sites(id,revision,config,snapshot,fetched_at,last_checked,error,warnings,next_sync,favicon,favicon_blob,favicon_type)
+             VALUES(?,?,?,?,?,?,?,?,?,?,?,?) ON CONFLICT(id) DO UPDATE SET revision=excluded.revision,
              config=excluded.config,snapshot=excluded.snapshot,fetched_at=excluded.fetched_at,
              last_checked=excluded.last_checked,error=excluded.error,warnings=excluded.warnings,next_sync=excluded.next_sync,
-             favicon=excluded.favicon`,
+             favicon=excluded.favicon,favicon_blob=excluded.favicon_blob,favicon_type=excluded.favicon_type`,
           )
           .run(
             entry.id,
@@ -248,6 +263,10 @@ export class Store {
             JSON.stringify(entry.warnings),
             Date.now() + this.interval * 1000,
             entry.favicon ? JSON.stringify(entry.favicon) : null,
+            entry.favicon_cache
+              ? Buffer.from(entry.favicon_cache.data, "base64")
+              : null,
+            entry.favicon_cache?.type ?? null,
           );
         if (cleanup) this.enqueue(this.row(entry.id), "delete");
         else if (entry.config.enabled && entry.config.type !== "others")
@@ -309,18 +328,33 @@ export class Store {
   row(id) {
     return this.db.prepare("SELECT * FROM sites WHERE id=?").get(id);
   }
-  saveFavicon(id, revision, input, previous = null) {
+  // Store bytes and discovery state atomically without replacing newer results.
+  saveFavicon(id, revision, input, previous = null, image = null) {
     const row = this.row(id);
     if (!row || row.revision !== revision || row.favicon !== previous)
       return false;
     const state = favicon(input, JSON.parse(row.config).url);
     if (!state) throw new HttpError(400, "Expected saved favicon discovery");
+    if (
+      image &&
+      (!state.selected ||
+        !image.type ||
+        iconType(image.body, image.type) !== image.type)
+    )
+      throw new HttpError(400, "Invalid cached favicon image");
     return Boolean(
       this.db
         .prepare(
-          "UPDATE sites SET favicon=? WHERE id=? AND revision=? AND favicon IS ?",
+          "UPDATE sites SET favicon=?,favicon_blob=?,favicon_type=? WHERE id=? AND revision=? AND favicon IS ?",
         )
-        .run(JSON.stringify(state), id, revision, previous).changes,
+        .run(
+          JSON.stringify(state),
+          image?.body ?? null,
+          image?.type ?? null,
+          id,
+          revision,
+          previous,
+        ).changes,
     );
   }
   enqueue(row, operation = "sync") {
@@ -405,7 +439,11 @@ export class Store {
         previous &&
         ["url", "icon"].some((key) => (previous[key] ?? "") !== config[key])
       )
-        this.db.prepare("UPDATE sites SET favicon=NULL WHERE id=?").run(id);
+        this.db
+          .prepare(
+            "UPDATE sites SET favicon=NULL,favicon_blob=NULL,favicon_type=NULL WHERE id=?",
+          )
+          .run(id);
       this.db
         .prepare(
           "UPDATE jobs SET state='superseded',payload='{}' WHERE site_id=? AND state IN ('pending','running')",
@@ -655,7 +693,8 @@ export class Store {
       now = Date.now();
     return this.db
       .prepare(
-        `SELECT s.*,j.state AS job_state,j.attempts AS job_attempts,j.error AS job_error
+        `SELECT s.id,s.revision,s.config,s.snapshot,s.fetched_at,s.last_checked,s.error,s.warnings,
+         j.state AS job_state,j.attempts AS job_attempts,j.error AS job_error
          FROM sites s LEFT JOIN jobs j ON j.id=(
            SELECT id FROM jobs WHERE site_id=s.id AND revision=s.revision AND state IN ('pending','running')
            ORDER BY created_at DESC,rowid DESC LIMIT 1)

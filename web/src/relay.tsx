@@ -50,11 +50,15 @@ export function SiteIcon({
         `/api/sites/${site.id}/icon`,
         "GET",
         undefined,
-        25000,
+        30000,
       )
         .then((data) => {
           if (active) {
-            setSources(data.icons);
+            setSources(
+              data.icons.filter(
+                (source) => source === `/api/sites/${site.id}/icon/image`,
+              ),
+            );
             setIndex(0);
           }
         })

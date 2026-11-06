@@ -12,14 +12,15 @@
 
 ## JSON 与 SQLite 备份
 
-两个格式包含相同的业务数据：所有站点（含隐藏站点）、配置与明文凭据、最后成功快照、抓取时间与诊断、动态记录及其撤下状态、同步周期，以及独立于 sync 的 favicon 候选 / 选中地址（含默认图标状态）。
+两个格式包含相同的业务数据：所有站点（含隐藏站点）、配置与明文凭据、最后成功快照、抓取时间与诊断、动态记录及其撤下状态、同步周期，以及独立于 sync 的 favicon 候选 / 选中地址、失败状态和已缓存的图片字节。恢复已有图标缓存后不需要访问上游。
 支付渠道预设也包含在两个格式中；旧备份缺少该设置时保留当前预设。
 
 - **JSON**：版本化 `cerium-web-backup` 文件，可阅读或编辑。修改后仍须通过完整字段、公开快照、唯一身份和记录关联校验。
 - **SQLite (.db)**：真正的 Cerium web SQLite 数据库，使用 SQLite backup API 生成一致性快照，包含已提交的 WAL 数据，可在运行中导出。不是 SQL 文本脚本，也不是 Go 同步器数据库。
 - 不包含管理入口、管理密码、登录会话或旧同步任务。SQLite 导出还清空任务表并压缩数据库，避免这些内容残留在空闲页中。
 - 文件最多 64 MiB。导出的账号密码、面板令牌均是明文，应当作为高权限机密保存，不要公开分享、提交到 Git 或上传到不可信服务。
-- 兼容没有 favicon 字段的旧版 JSON 备份和旧 SQLite 数据库；导入后仅在首次请求图标时独立发现，不会跟随后续 sync 重新选取。
+- JSON 的 `favicon_cache` 保存 MIME 类型和 Base64 图像，SQLite 的 `favicon_blob` / `favicon_type` 保存对应字节与类型。单张图片最多 1 MiB，导入时同时验证图像内容和类型，无效缓存不会部分写入。
+- 兼容只有图标地址或没有 favicon 字段的旧版 JSON 备份和旧 SQLite 数据库；首次请求时下载旧地址或独立发现，补齐图片缓存，不会跟随后续 sync 重新选取。
 
 ## 支付渠道与充值
 
@@ -56,7 +57,7 @@ JSON 导入使用 `Content-Type: application/json`；SQLite 使用 `application/
 
 ```sh
 cd web
-node --test test/admin-data.test.mjs test/server.test.mjs test/icons.test.mjs test/favicon-state.test.mjs
+node --test test/admin-data.test.mjs test/server.test.mjs test/icons.test.mjs test/favicon-state.test.mjs test/icon-cache.test.mjs
 npm run build
 npx playwright test --config=playwright.admin.config.ts
 ```
