@@ -301,10 +301,10 @@ test("activity rails use site logos and preserve fallback icons across themes", 
   await page.route("**/api/sites/*/icon", (route) => {
     const id = route.request().url().split("/").at(-2);
     return route.fulfill({
-      json: { icons: [`/assets/ui-polish-site-${id}.svg`] },
+      json: { icons: [`/api/sites/${id}/icon/image`] },
     });
   });
-  await page.route("**/assets/ui-polish-site-*.svg", (route) =>
+  await page.route("**/api/sites/*/icon/image", (route) =>
     route.fulfill({
       contentType: "image/svg+xml",
       body: '<svg xmlns="http://www.w3.org/2000/svg" width="36" height="36"><rect width="36" height="36" rx="9" fill="#1769eb"/><path d="M9 18h18M18 9v18" stroke="white" stroke-width="3"/></svg>',
@@ -319,7 +319,7 @@ test("activity rails use site logos and preserve fallback icons across themes", 
     for (const [index, site] of data.sites.slice(0, 2).entries()) {
       await expect(logos.nth(index)).toHaveAttribute(
         "src",
-        `/assets/ui-polish-site-${site.id}.svg`,
+        `/api/sites/${site.id}/icon/image`,
       );
     }
     await expect(page.locator(".timeline__marker > svg")).toHaveCount(0);
@@ -329,8 +329,8 @@ test("activity rails use site logos and preserve fallback icons across themes", 
     });
   }
   await page.getByRole("button", { name: "关闭倍率动态" }).click();
-  await page.route("**/api/sites/*/icon", (route) =>
-    route.fulfill({ json: { icons: ["/missing-site-icon.png"] } }),
+  await page.route("**/api/sites/*/icon/image", (route) =>
+    route.fulfill({ status: 404 }),
   );
   await page.getByRole("button", { name: "倍率动态", exact: true }).click();
   await expect

@@ -2,7 +2,9 @@ import { test, expect } from "@playwright/test";
 import { readFileSync } from "node:fs";
 import { resolve } from "node:path";
 
-test("saved favicon survives catalog refresh and reload, and a failed image does not replace its address", async ({
+test.use({ reducedMotion: "reduce" });
+
+test("cached favicon survives refresh without any browser request to the provider", async ({
   page,
 }) => {
   const session = JSON.parse(
@@ -21,9 +23,16 @@ test("saved favicon survives catalog refresh and reload, and a failed image does
       payment_methods: [],
       manual_catalog: { groups: [{ id: "g", name: "Group", multiplier: 1 }] },
     },
-    iconURL = config.url + "/favicon-fixed.svg";
+    iconURL = config.url + "/favicon-fixed.svg",
+    svg =
+      '<svg xmlns="http://www.w3.org/2000/svg" width="16" height="16"><rect width="16" height="16" fill="#166534"/></svg>';
   const errors: string[] = [];
+  const externalRequests: string[] = [];
   page.on("pageerror", (error) => errors.push(error.message));
+  page.on("request", (request) => {
+    if (request.url().startsWith(config.url))
+      externalRequests.push(request.url());
+  });
   const login = await page.request.post(base + "/login", {
     headers,
     data: { password: session.password },
@@ -35,6 +44,7 @@ test("saved favicon survives catalog refresh and reload, and a failed image does
   });
   expect(created.status()).toBe(201);
   const { id } = await created.json();
+  const cachedURL = `/api/sites/${id}/icon/image`;
   try {
     const backupResponse = await page.request.post(
       base + "/data/export?format=json",
@@ -51,6 +61,10 @@ test("saved favicon survives catalog refresh and reload, and a failed image does
       icons: [iconURL],
       selected: iconURL,
     };
+    backup.sites[0].favicon_cache = {
+      type: "image/svg+xml",
+      data: Buffer.from(svg).toString("base64"),
+    };
     const restored = await page.request.post(
       base + "/data/import?format=json&mode=merge",
       {
@@ -59,19 +73,14 @@ test("saved favicon survives catalog refresh and reload, and a failed image does
       },
     );
     expect(restored.status()).toBe(200);
-    await page.route(iconURL, (route) =>
-      route.fulfill({
-        contentType: "image/svg+xml",
-        body: '<svg xmlns="http://www.w3.org/2000/svg" width="16" height="16"><rect width="16" height="16" fill="#166534"/></svg>',
-      }),
-    );
+    await page.emulateMedia({ colorScheme: "dark" });
     await page.goto("/");
     const card = page.locator(".relay-card").filter({
       has: page.getByRole("heading", { name: config.name, exact: true }),
     });
     const icon = card.locator(".site-icon img");
     await card.scrollIntoViewIfNeeded();
-    await expect(icon).toHaveAttribute("src", iconURL);
+    await expect(icon).toHaveAttribute("src", cachedURL);
     await expect
       .poll(() =>
         icon.evaluate((image) => (image as HTMLImageElement).naturalWidth),
@@ -92,13 +101,32 @@ test("saved favicon survives catalog refresh and reload, and a failed image does
       .getByRole("button", { name: "\u5237\u65b0\u76ee\u5f55", exact: true })
       .click();
     await expect(card.locator(".rate-summary strong")).toContainText("0.75");
-    await expect(icon).toHaveAttribute("src", iconURL);
+    await expect(icon).toHaveAttribute("src", cachedURL);
     await page.reload();
     await card.scrollIntoViewIfNeeded();
-    await expect(icon).toHaveAttribute("src", iconURL);
+    await expect(icon).toHaveAttribute("src", cachedURL);
+    await expect
+      .poll(() =>
+        icon.evaluate((image) => (image as HTMLImageElement).naturalWidth),
+      )
+      .toBe(16);
+    const cachedImage = await page.request.get(cachedURL);
+    expect(cachedImage.status()).toBe(200);
+    expect(await cachedImage.text()).toBe(svg);
+    await page.screenshot({ path: "../artifacts/favicon-cache-desktop.png" });
+    await page.setViewportSize({ width: 390, height: 844 });
+    await page.emulateMedia({ colorScheme: "light" });
+    await page.reload();
+    await card.scrollIntoViewIfNeeded();
+    await expect(icon).toHaveAttribute("src", cachedURL);
+    await expect
+      .poll(() =>
+        icon.evaluate((image) => (image as HTMLImageElement).naturalWidth),
+      )
+      .toBe(16);
+    await page.screenshot({ path: "../artifacts/favicon-cache-mobile.png" });
 
-    await page.unroute(iconURL);
-    await page.route(iconURL, (route) =>
+    await page.route(cachedURL, (route) =>
       route.fulfill({ status: 404, body: "Missing" }),
     );
     await page.reload();
@@ -114,13 +142,24 @@ test("saved favicon survives catalog refresh and reload, and a failed image does
       .toBe(true);
     expect(
       await (await page.request.get(`/api/sites/${id}/icon`)).json(),
-    ).toEqual({ icons: [iconURL] });
+    ).toEqual({ icons: [cachedURL] });
     const exported = await (
       await page.request.post(base + "/data/export?format=json", { headers })
     ).json();
     expect(
       exported.sites.find((site: { id: string }) => site.id === id).favicon,
     ).toEqual(backup.sites[0].favicon);
+    expect(
+      exported.sites.find((site: { id: string }) => site.id === id)
+        .favicon_cache,
+    ).toEqual(backup.sites[0].favicon_cache);
+    await page.route(`**/api/sites/${id}/icon`, (route) =>
+      route.fulfill({ json: { icons: [iconURL] } }),
+    );
+    await page.reload();
+    await card.scrollIntoViewIfNeeded();
+    await expect(icon).toHaveAttribute("src", /\/assets\/newapi.*\.png$/);
+    expect(externalRequests).toEqual([]);
     expect(errors).toEqual([]);
   } finally {
     await page.request.delete(`${base}/sites/${id}`, { headers });

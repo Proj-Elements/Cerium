@@ -940,8 +940,12 @@ test("group changes surface publicly and admins can withdraw or restore the anno
 test("unavailable discovered icons fall back to bundled provider icons", async ({
   page,
 }) => {
-  await page.route("**/api/sites/*/icon", (route) =>
-    route.fulfill({ json: { icons: ["/missing-site-icon.png"] } }),
+  await page.route("**/api/sites/*/icon", (route) => {
+    const id = route.request().url().split("/").at(-2);
+    return route.fulfill({ json: { icons: [`/api/sites/${id}/icon/image`] } });
+  });
+  await page.route("**/api/sites/*/icon/image", (route) =>
+    route.fulfill({ status: 404 }),
   );
   await page.goto("/");
   const icons = page.locator(".relay-card .site-icon img");

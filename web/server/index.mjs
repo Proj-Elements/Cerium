@@ -204,6 +204,29 @@ export function createApp(options = {}) {
           changes: store.changes(),
           interval: store.interval,
         });
+      const imageMatch = path.match(
+        /^\/api\/sites\/([\da-f-]{36})\/icon\/image$/,
+      );
+      if (imageMatch && method === "GET") {
+        const row = store.row(imageMatch[1]);
+        if (
+          !row ||
+          !JSON.parse(row.config).enabled ||
+          !row.favicon_blob ||
+          !row.favicon_type
+        )
+          throw new HttpError(404, "Icon not found");
+        // A cached SVG must also be isolated when opened as a document.
+        res.setHeader(
+          "Content-Security-Policy",
+          "default-src 'none'; style-src 'unsafe-inline'; sandbox",
+        );
+        res.writeHead(200, {
+          "Content-Type": row.favicon_type,
+          "Content-Length": row.favicon_blob.length,
+        });
+        return res.end(row.favicon_blob);
+      }
       const iconMatch = path.match(/^\/api\/sites\/([\da-f-]{36})\/icon$/);
       if (iconMatch && method === "GET") {
         return send(res, 200, await resolveIcon(iconMatch[1]));

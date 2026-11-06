@@ -10,6 +10,7 @@ NODE_TESTS = (
     "web/test/admin-data.test.mjs",
     "web/test/changes.test.mjs",
     "web/test/favicon-state.test.mjs",
+    "web/test/icon-cache.test.mjs",
     "web/test/icon-transport.test.mjs",
     "web/test/icons.test.mjs",
     "web/test/payment-presets.test.mjs",

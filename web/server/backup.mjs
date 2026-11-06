@@ -8,6 +8,7 @@ import {
 } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { ICON_LIMIT, iconType } from "./icon-content.mjs";
 import {
   catalog,
   favicon,
@@ -40,6 +41,25 @@ function timestamp(value, nullable = true) {
   if (!Number.isFinite(time) || time < 0 || time > Date.now() + 300000)
     fail("Invalid backup timestamp");
   return new Date(time).toISOString();
+}
+function iconCache(value, state) {
+  if (value == null) return null;
+  if (
+    !object(value) ||
+    !state?.selected ||
+    typeof value.type !== "string" ||
+    !value.type ||
+    typeof value.data !== "string" ||
+    value.data.length > Math.ceil(ICON_LIMIT / 3) * 4
+  )
+    fail("Invalid cached favicon image");
+  const bytes = Buffer.from(value.data, "base64");
+  if (
+    bytes.toString("base64") !== value.data ||
+    iconType(bytes, value.type) !== value.type
+  )
+    fail("Invalid cached favicon image");
+  return { type: value.type, data: value.data };
 }
 export function siteIdentity(config) {
   return config.type === "others"
@@ -103,6 +123,7 @@ export function validateBackup(input) {
       fail("Snapshot and fetched timestamp must be supplied together");
     if (!Array.isArray(entry.warnings) || entry.warnings.length > 30)
       fail("Invalid backup warnings");
+    const savedFavicon = favicon(entry.favicon, config.url);
     return {
       id,
       revision: entry.revision,
@@ -112,7 +133,8 @@ export function validateBackup(input) {
       last_checked: lastChecked,
       error: entry.error == null ? null : text(entry.error, 2000),
       warnings: entry.warnings.map((warning) => text(warning, 1000)),
-      favicon: favicon(entry.favicon, config.url),
+      favicon: savedFavicon,
+      favicon_cache: iconCache(entry.favicon_cache, savedFavicon),
     };
   });
   const changeIds = new Set();
@@ -271,10 +293,14 @@ export function parseBackup(bytes, format, defaultInterval = 900) {
         .all()
         .map((row) => [row.key, row.value]),
     );
-    const hasFavicon = db
-      .prepare("PRAGMA table_info(sites)")
-      .all()
-      .some((column) => column.name === "favicon");
+    const columns = new Set(
+      db
+        .prepare("PRAGMA table_info(sites)")
+        .all()
+        .map((column) => column.name),
+    );
+    const hasFavicon = columns.has("favicon"),
+      hasIconCache = columns.has("favicon_blob") && columns.has("favicon_type");
     return validateBackup({
       format: settings.backup_format ?? FORMAT,
       version: Number(settings.backup_version ?? 1),
@@ -289,7 +315,7 @@ export function parseBackup(bytes, format, defaultInterval = 900) {
       },
       sites: db
         .prepare(
-          `SELECT id,revision,config,snapshot,fetched_at,last_checked,error,warnings,${hasFavicon ? "favicon" : "NULL AS favicon"} FROM sites ORDER BY rowid LIMIT 201`,
+          `SELECT id,revision,config,snapshot,fetched_at,last_checked,error,warnings,${hasFavicon ? "favicon" : "NULL AS favicon"},${hasIconCache ? "favicon_blob,favicon_type" : "NULL AS favicon_blob,NULL AS favicon_type"} FROM sites ORDER BY rowid LIMIT 201`,
         )
         .all()
         .map((row) => ({
@@ -298,6 +324,13 @@ export function parseBackup(bytes, format, defaultInterval = 900) {
           snapshot: row.snapshot ? JSON.parse(row.snapshot) : null,
           warnings: JSON.parse(row.warnings || "[]"),
           favicon: row.favicon == null ? null : JSON.parse(row.favicon),
+          favicon_cache:
+            row.favicon_blob == null
+              ? null
+              : {
+                  type: row.favicon_type,
+                  data: Buffer.from(row.favicon_blob).toString("base64"),
+                },
         })),
       changes: db
         .prepare(

@@ -27,6 +27,15 @@ const savedIcon = {
   ],
   selected: "https://icon.example/brand.svg?v=1",
 };
+const image = {
+  body: Buffer.from(
+    '<svg xmlns="http://www.w3.org/2000/svg" width="16" height="16"/>',
+  ),
+  type: "image/svg+xml",
+};
+const discovered = { ...savedIcon, image };
+const cached = (id) => ({ icons: [`/api/sites/${id}/icon/image`] });
+
 function storage(t) {
   const dir = mkdtempSync(join(tmpdir(), "cerium-icon-test-")),
     path = join(dir, "web.db");
@@ -82,7 +91,7 @@ test("coalesces discovery and preserves selection through sync, edits, hiding an
   const discover = async (site) => {
     assert.deepEqual(site, { url: config.url });
     calls++;
-    return savedIcon;
+    return discovered;
   };
   const resolve = createPersistentIconResolver(store, discover);
   complete(store, id);
@@ -93,7 +102,7 @@ test("coalesces discovery and preserves selection through sync, edits, hiding an
     Array.from({ length: 12 }, () => resolve(id)),
   );
   assert.equal(calls, 1);
-  assert.ok(responses.every((value) => value.icons[0] === savedIcon.selected));
+  assert.ok(responses.every((value) => value.icons[0] === cached(id).icons[0]));
   assert.deepEqual(JSON.parse(store.row(id).favicon), savedIcon);
   assert.equal(store.row(id).revision, originalRevision);
   assert.deepEqual(store.db.prepare("SELECT * FROM jobs").all(), originalJobs);
@@ -111,7 +120,7 @@ test("coalesces discovery and preserves selection through sync, edits, hiding an
   store.save({ ...config, enabled: false }, id);
   await assert.rejects(resolve(id), { status: 404 });
   store.save(config, id);
-  assert.deepEqual(await resolve(id), { icons: [savedIcon.selected] });
+  assert.deepEqual(await resolve(id), cached(id));
   assert.equal(calls, 1);
 
   const restarted = fixture.restart();
@@ -120,7 +129,7 @@ test("coalesces discovery and preserves selection through sync, edits, hiding an
     await createPersistentIconResolver(restarted, () => {
       throw new Error("Must not rediscover");
     })(id),
-    { icons: [savedIcon.selected] },
+    cached(id),
   );
 });
 
@@ -161,9 +170,9 @@ test("caches unavailable icons briefly and retries after the network recovers", 
   assert.deepEqual(
     await createPersistentIconResolver(fixture.store, () => {
       calls++;
-      return savedIcon;
+      return discovered;
     })(id),
-    { icons: [savedIcon.selected] },
+    cached(id),
   );
   assert.equal(calls, 2);
 });
@@ -179,10 +188,10 @@ test("old permanently cached failures are rediscovered once without changing sel
   let calls = 0;
   const resolver = createPersistentIconResolver(store, () => {
     calls++;
-    return savedIcon;
+    return discovered;
   });
-  assert.deepEqual(await resolver(id), { icons: [savedIcon.selected] });
-  assert.deepEqual(await resolver(id), { icons: [savedIcon.selected] });
+  assert.deepEqual(await resolver(id), cached(id));
+  assert.deepEqual(await resolver(id), cached(id));
   assert.equal(calls, 1);
 });
 
@@ -202,13 +211,14 @@ test("URL changes invalidate selection and late discoveries cannot restore the o
     return {
       icons: [`${nextURL}/favicon.ico`],
       selected: `${nextURL}/favicon.ico`,
+      image,
     };
   });
   const response = resolve(id);
   await started.promise;
   store.save({ ...config, url: nextURL }, id);
-  pending.resolve(savedIcon);
-  assert.deepEqual(await response, { icons: [`${nextURL}/favicon.ico`] });
+  pending.resolve(discovered);
+  assert.deepEqual(await response, cached(id));
   assert.equal(calls, 2);
   assert.equal(JSON.parse(store.row(id).favicon).url, nextURL);
   store.save({ ...config, url: "https://third-icon.example" }, id);
@@ -233,9 +243,13 @@ test("late discovery neither overwrites restored icons nor recreates deleted sit
       selected: "https://icon.example/restored.svg",
     };
   data.sites[0].favicon = restored;
+  data.sites[0].favicon_cache = {
+    type: image.type,
+    data: image.body.toString("base64"),
+  };
   store.importData(data);
-  pending.resolve(savedIcon);
-  assert.deepEqual(await response, { icons: [restored.selected] });
+  pending.resolve(discovered);
+  assert.deepEqual(await response, cached(id));
   assert.deepEqual(JSON.parse(store.row(id).favicon), restored);
 
   const other = store.save({ ...config, url: "https://deleted-icon.example" }),
@@ -254,15 +268,18 @@ test("late discovery neither overwrites restored icons nor recreates deleted sit
   assert.equal(store.row(other), undefined);
 });
 
-test("preserves explicit legacy icons without making server-side requests", async (t) => {
+test("fetches explicit legacy icons into the persistent cache", async (t) => {
   const { store } = storage(t),
     id = store.save({ ...config, icon: "https://legacy-icon.example" });
-  const resolve = createPersistentIconResolver(store, () => {
-    throw new Error("No network request allowed");
+  const resolve = createPersistentIconResolver(store, (site) => {
+    assert.deepEqual(site, {
+      url: config.url,
+      preferred: "https://legacy-icon.example",
+      explicit: true,
+    });
+    return { icons: [site.preferred], selected: site.preferred, image };
   });
-  assert.deepEqual(await resolve(id), {
-    icons: ["https://legacy-icon.example/"],
-  });
+  assert.deepEqual(await resolve(id), cached(id));
   assert.equal(
     JSON.parse(store.row(id).favicon).selected,
     "https://legacy-icon.example/",
@@ -279,7 +296,7 @@ for (const format of ["json", "sqlite"]) {
         url: "https://hidden-icon.example",
         enabled: false,
       });
-    source.saveFavicon(id, source.row(id).revision, savedIcon);
+    source.saveFavicon(id, source.row(id).revision, savedIcon, null, image);
     const fallback = {
       url: "https://hidden-icon.example",
       icons: ["https://hidden-icon.example/favicon.ico"],
@@ -296,7 +313,7 @@ for (const format of ["json", "sqlite"]) {
         calls++;
         return { icons: [] };
       })(id),
-      { icons: [savedIcon.selected] },
+      cached(id),
     );
     assert.equal(calls, 0);
   });
@@ -319,9 +336,9 @@ for (const format of ["json", "sqlite"]) {
     assert.deepEqual(
       await createPersistentIconResolver(
         destination,
-        async () => savedIcon,
+        async () => discovered,
       )(id),
-      { icons: [savedIcon.selected] },
+      cached(id),
     );
   });
 }
@@ -330,10 +347,14 @@ test("migrates old databases and validates favicon metadata before imports", (t)
   const fixture = storage(t),
     id = fixture.store.save(config),
     adminPath = fixture.store.adminPath;
-  fixture.store.db.exec("ALTER TABLE sites DROP COLUMN favicon");
+  fixture.store.db.exec(
+    "ALTER TABLE sites DROP COLUMN favicon; ALTER TABLE sites DROP COLUMN favicon_blob; ALTER TABLE sites DROP COLUMN favicon_type",
+  );
   const store = fixture.restart();
   assert.equal(store.adminPath, adminPath);
   assert.equal(store.row(id).favicon, null);
+  assert.equal(store.row(id).favicon_blob, null);
+  assert.equal(store.row(id).favicon_type, null);
   const original = store.exportData();
   for (const favicon of [
     { ...savedIcon, url: "https://wrong.example" },
@@ -395,7 +416,7 @@ test("the public icon endpoint persists independently of signed sync callbacks",
     dispatch: false,
     resolveIcon: async () => {
       calls++;
-      return savedIcon;
+      return discovered;
     },
     log: () => {},
   });
@@ -411,7 +432,7 @@ test("the public icon endpoint persists independently of signed sync callbacks",
   assert.equal(calls, 0);
   const response = await fetch(path);
   assert.equal(response.status, 200);
-  assert.deepEqual(await response.json(), { icons: [savedIcon.selected] });
+  assert.deepEqual(await response.json(), cached(id));
   const job = app.store.nextJob(),
     timestamp = String(Math.floor(Date.now() / 1000)),
     body = JSON.stringify({
@@ -436,9 +457,7 @@ test("the public icon endpoint persists independently of signed sync callbacks",
   });
   assert.equal(synced.status, 200);
   await synced.body?.cancel();
-  assert.deepEqual(await (await fetch(path)).json(), {
-    icons: [savedIcon.selected],
-  });
+  assert.deepEqual(await (await fetch(path)).json(), cached(id));
   assert.equal(calls, 1);
   app.store.save({ ...config, enabled: false }, id);
   const hidden = await fetch(path);

@@ -124,6 +124,10 @@ test("discovers candidates once and selects a real image rather than a missing l
     url: "https://relay.example",
   });
   assert.equal(result.selected, "https://relay.example/brand.svg?v=2");
+  assert.deepEqual(result.image, {
+    body: Buffer.from(svg),
+    type: "image/svg+xml",
+  });
   assert.deepEqual(result.icons.slice(0, 3), [
     "https://relay.example/missing.ico",
     "https://relay.example/shell.png",
@@ -150,11 +154,65 @@ test("tries common favicon locations under both the site prefix and the origin",
     url: "https://relay.example/panel",
   });
   assert.equal(result.selected, "https://relay.example/favicon.png");
+  assert.equal(result.image.type, "image/png");
   assert.ok(result.icons.includes("https://relay.example/panel/favicon.ico"));
   assert.ok(
     result.icons.includes("https://relay.example/apple-touch-icon.png"),
   );
   assert.ok(result.icons.length <= 12);
+});
+
+test("downloads a saved selection first and rediscovers only if it is unavailable", async () => {
+  const routes = {
+    "/": { status: 200, body: '<link rel="icon" href="/brand.svg">' },
+    "/brand.svg": { status: 200, type: "image/svg+xml", body: svg },
+  };
+  const cached = transport(routes);
+  assert.equal(
+    (
+      await createIconResolver(cached)({
+        url: "https://relay.example",
+        preferred: "https://relay.example/brand.svg",
+      })
+    ).selected,
+    "https://relay.example/brand.svg",
+  );
+  assert.deepEqual(cached.requests, ["https://relay.example/brand.svg"]);
+
+  const stale = transport(routes);
+  const input = {
+    url: "https://relay.example",
+    preferred: "https://relay.example/removed.svg",
+  };
+  assert.equal(
+    (await createIconResolver(stale)(input)).selected,
+    "https://relay.example/brand.svg",
+  );
+  assert.deepEqual(stale.requests, [
+    input.preferred,
+    input.url + "/",
+    input.url + "/brand.svg",
+  ]);
+
+  const explicit = transport(routes);
+  assert.equal(
+    (await createIconResolver(explicit)({ ...input, explicit: true })).selected,
+    "",
+  );
+  assert.deepEqual(explicit.requests, [input.preferred]);
+
+  const privateTarget = transport(routes);
+  assert.equal(
+    (
+      await createIconResolver(privateTarget)({
+        ...input,
+        preferred: "http://169.254.169.254/metadata",
+        explicit: true,
+      })
+    ).selected,
+    "",
+  );
+  assert.deepEqual(privateTarget.requests, []);
 });
 
 test("icon discovery tolerates a slow proxy response without losing the advertised icon", async () => {

@@ -2,6 +2,7 @@ import { lookup } from "node:dns/promises";
 import { BlockList, isIP } from "node:net";
 import { favicon, HttpError } from "./validation.mjs";
 import { createIconRequest } from "./icon-transport.mjs";
+import { ICON_LIMIT, iconType } from "./icon-content.mjs";
 
 const globalIPv6 = new BlockList();
 globalIPv6.addSubnet("2000::", 3, "ipv6");
@@ -157,7 +158,7 @@ async function readResource(
         }
         const chunks = [];
         let length = 0;
-        const limit = icon ? 1 << 20 : 256 << 10;
+        const limit = icon ? ICON_LIMIT : 256 << 10;
         response.on("data", (chunk) => {
           length += chunk.length;
           if (length > limit)
@@ -208,24 +209,7 @@ export function findIcons(html, base) {
   return [...new Set(icons)].slice(0, 4);
 }
 
-function isIcon(body, type) {
-  if (type === "image/svg+xml")
-    return /<svg(?:\s|>)/i.test(body.toString("utf8", 0, 4096));
-  return (
-    body.subarray(0, 8).equals(Buffer.from("89504e470d0a1a0a", "hex")) ||
-    (body.length > 6 &&
-      body.readUInt32LE(0) === 0x10000 &&
-      body.readUInt16LE(4) > 0) ||
-    /^GIF8[79]a$/.test(body.toString("ascii", 0, 6)) ||
-    (body[0] === 0xff && body[1] === 0xd8 && body[2] === 0xff) ||
-    (body.toString("ascii", 0, 4) === "RIFF" &&
-      body.toString("ascii", 8, 12) === "WEBP") ||
-    (body.toString("ascii", 4, 8) === "ftyp" &&
-      /avif|avis/.test(body.toString("ascii", 8, 32))) ||
-    body.toString("ascii", 0, 2) === "BM"
-  );
-}
-
+/** Discover bounded image bytes, trying an existing or explicit address first. */
 export function createIconResolver(options = {}) {
   const transport = {
     lookup: options.lookup ?? lookup,
@@ -241,6 +225,23 @@ export function createIconResolver(options = {}) {
   };
   return async (site) => {
     try {
+      if (site.preferred) {
+        try {
+          const deadline = AbortSignal.timeout(5000),
+            target = await publicTarget(site.preferred, deadline, transport),
+            image = await readResource(target, deadline, transport, true),
+            type = iconType(image.body, image.type);
+          if (type)
+            return {
+              icons: [site.preferred],
+              selected: site.preferred,
+              image: { body: image.body, type },
+            };
+        } catch {
+          /* Retry normal discovery if a previously selected address is stale. */
+        }
+        if (site.explicit) return { icons: [site.preferred], selected: "" };
+      }
       const pageDeadline = AbortSignal.timeout(10000),
         target = await publicTarget(site.url, pageDeadline, transport);
       let page;
@@ -280,9 +281,14 @@ export function createIconResolver(options = {}) {
         ]);
         try {
           const target = await publicTarget(candidate, deadline, transport),
-            image = await readResource(target, deadline, transport, true);
-          if (isIcon(image.body, image.type))
-            return { icons, selected: candidate };
+            image = await readResource(target, deadline, transport, true),
+            type = iconType(image.body, image.type);
+          if (type)
+            return {
+              icons,
+              selected: candidate,
+              image: { body: image.body, type },
+            };
         } catch {
           /* Try the next candidate without changing an already saved icon. */
         }
@@ -294,12 +300,15 @@ export function createIconResolver(options = {}) {
   };
 }
 
+/** Resolve to a same-origin image path, lazily migrating older URL-only records. */
 export function createPersistentIconResolver(
   store,
   discover = createIconResolver(),
 ) {
   const pending = new Map();
-  const result = (state) => ({ icons: state.selected ? [state.selected] : [] });
+  const result = (id, row) => ({
+    icons: row.favicon_blob ? [`/api/sites/${id}/icon/image`] : [],
+  });
   return async (id) => {
     for (let attempt = 0; attempt < 3; attempt++) {
       const row = store.row(id),
@@ -308,44 +317,64 @@ export function createPersistentIconResolver(
       const previous = row.favicon === null ? null : JSON.parse(row.favicon);
       if (
         previous &&
-        (previous.selected ||
+        ((previous.selected && row.favicon_blob && row.favicon_type) ||
           Date.now() - Date.parse(previous.checked_at) < 15 * 60000)
       )
-        return result(previous);
+        return result(id, row);
       const key = `${id}:${row.revision}`;
       let promise = pending.get(key);
       if (!promise) {
         promise = Promise.resolve()
-          .then(() =>
-            config.icon
-              ? { icons: [config.icon], selected: config.icon }
-              : discover({ url: config.url }),
-          )
+          .then(() => {
+            const preferred = config.icon || previous?.selected;
+            return discover({
+              url: config.url,
+              ...(preferred ? { preferred } : {}),
+              ...(config.icon ? { explicit: true } : {}),
+            });
+          })
           .then((value) => {
-            const selected = value.selected ?? value.icons[0] ?? "";
-            return favicon(
-              {
-                url: config.url,
-                icons: value.icons,
-                selected,
-                ...(!selected ? { checked_at: new Date().toISOString() } : {}),
-              },
-              config.url,
-            );
+            const type = iconType(value.image?.body, value.image?.type),
+              selected = type ? (value.selected ?? value.icons[0] ?? "") : "";
+            return {
+              state:
+                !selected && previous?.selected
+                  ? {
+                      ...previous,
+                      checked_at: new Date().toISOString(),
+                    }
+                  : favicon(
+                      {
+                        url: config.url,
+                        icons: value.icons,
+                        selected,
+                        ...(!selected
+                          ? { checked_at: new Date().toISOString() }
+                          : {}),
+                      },
+                      config.url,
+                    ),
+              image: selected ? { body: value.image.body, type } : null,
+            };
           })
           .catch(() => ({
-            url: config.url,
-            icons: [],
-            selected: "",
-            checked_at: new Date().toISOString(),
+            state: previous?.selected
+              ? { ...previous, checked_at: new Date().toISOString() }
+              : {
+                  url: config.url,
+                  icons: [],
+                  selected: "",
+                  checked_at: new Date().toISOString(),
+                },
+            image: null,
           }))
           .finally(() => pending.delete(key));
         pending.set(key, promise);
       }
-      const state = await promise;
+      const { state, image } = await promise;
       // A delayed discovery must not overwrite edited, imported or deleted sites.
-      if (store.saveFavicon(id, row.revision, state, row.favicon))
-        return result(state);
+      if (store.saveFavicon(id, row.revision, state, row.favicon, image))
+        return result(id, store.row(id));
     }
     throw new HttpError(409, "Site changed during icon discovery; try again");
   };
