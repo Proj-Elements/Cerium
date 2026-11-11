@@ -1,9 +1,86 @@
 # Release Status
 
-Updated on 2026-11-04 (Asia/Shanghai). The Docker sections describe the earlier
-`codex/backend-maintenance` rollout; the branch-integration status is recorded
-separately below. Linked GitHub runs establish remote CI; the integration does
-not perform a new deployment, release, or version-tag push.
+Updated on 2026-11-11 (Asia/Shanghai). The current deployment and CI credential
+verification are recorded first. The subsequent sections retain the earlier
+`codex/backend-maintenance` rollout and branch-integration history.
+
+## Current Deployment (2026-11-11)
+
+At the owner's explicit request, replaced the existing Docker Desktop Compose
+deployment with application source `d38644eb7906ed801013fffe8b46be3fb7bddc6a`
+from [PR #4](https://github.com/Proj-Elements/Cerium/pull/4). The website remains
+available at `http://localhost:3080`. No release, version tag, image publication,
+or change to unrelated Compose projects was made.
+
+- Built Web with `docker compose build --no-cache web`, injecting the supplied
+  key through a BuildKit secret. The private artifact was downloaded anew,
+  verified against its pinned SHA256, and passed TypeScript, Vite and static
+  precompression. `hpsetup@latest` resolved to 4.8.0 and separately downloaded
+  the same artifact in isolated staging. Its additional peer-install phase hit
+  npm's `EALLOWSCRIPTS` restriction; the deployed build uses the existing checked
+  lockfile and does not depend on that phase or its staging-directory changes.
+- Built Sync and Solver from the current Dockerfiles. The new Solver started
+  as UID 10002, reported one connected browser and capacity four, and passed
+  `/healthz` and `/readyz`. A separate instance stopped promptly on SIGTERM
+  with exit 143 and no OOM or forced-kill exit. All three deployed services are
+  healthy and use independent network namespaces on the private Compose network.
+- Stopped old Sync before Web, then archived both named data volumes while
+  stopped. Verified archive readability and SHA256 before replacing containers.
+  Retained 24 sites, 24 credentials, 23 sessions, 415 one-time model probes and
+  their site mappings. Credential, probe and mapping fingerprints matched after
+  startup; sessions subsequently continue normal scheduled refreshes. Both
+  databases pass `PRAGMA quick_check` and `PRAGMA foreign_key_check`.
+- The old `bridge_jobs` table had no delivery-state column. Its migration
+  initialized historical results as pending and exposed false callback backlog
+  in readiness. Compared all 12,271 old job identities, site IDs and revisions
+  with Web's durable `done` or `superseded` receipts, then transactionally marked
+  only those confirmed identities delivered. No synchronization or model probe
+  was replayed. The normal retention policy then removed completed history.
+  The original databases and reconciliation audit are retained in the backup.
+- Web `/readyz` returns 200 with database, dispatcher, worker and Solver ready;
+  stale/pending callbacks and cleanup queues are zero. A signed idempotent
+  callback from the Sync container reached Web through service DNS. The normal
+  scheduler also completed due jobs and delivered real callbacks. Two sites,
+  稳 Token and 闪耀模型, still report upstream failures; both already had saved
+  errors in the stopped baseline. Service readiness does not imply every
+  third-party site succeeds or prove a real Turnstile solve.
+- Public assets and gzip decoding pass. Actual management login, authenticated
+  directory/settings reads and the data-settings dialog pass. Inspected desktop
+  and mobile public screenshots in light/dark modes plus management screenshots;
+  no page exceptions or horizontal overflow occurred. No full local regression
+  suite was repeated for this deployment.
+- Saved the key as repository Actions secret `HEROUI_SETUP_TOKEN`. The existing
+  push-only injection guard remains in place, excluding PR events. Reran the
+  frontend job of the main push; GitHub also reran its dependency/downstream
+  checks. [Attempt 2](https://github.com/Proj-Elements/Cerium/actions/runs/43039104018/attempts/2)
+  passed. Its frontend log confirms fresh premium installation, `tsc --noEmit`
+  and the production build, rather than the no-secret source-validation branch.
+  The token is absent from source, deployment evidence and image metadata/history.
+
+Private archives, image references, rollback Compose configuration, reconciliation
+audit, build/CI logs and screenshots are retained outside Git at
+`../cerium-backups/20261111-d38644e/` (directory 0700, files 0600). Previous image
+tags are `cerium-<service>:rollback-d38644e-20261111`; candidate tags are
+`cerium-<service>:deploy-d38644e-20261111`. Image identities:
+
+| Service | Candidate image SHA256 |
+| --- | --- |
+| Web | `cf0b1d9ea37af26d2e69f740633349f7692cf866dc71b929b3134ab8873ad531` |
+| Sync | `9238a3ded14bd3a44b6992e0bc95119478a9f49511d6d79dd84226dbf3766d67` |
+| Solver | `1f7e415b758ffd33f679f1de40ba03f69224461e3ab43d43c0a9589c18f3e69f` |
+
+The repair/rollout checks supersede the historical missing-field callback and
+premium-build limitations below. Remote browser tests were not added by this
+deployment; the integrated local browser suites and live-deployment checks remain
+separate evidence.
+
+- TODO (legacy delivery-state migration): make the cross-database completion
+  reconciliation reusable for other deployments upgrading from a `bridge_jobs`
+  table without `state`. This deployment used verified Web receipts and a
+  stopped-database transaction; initializing all historical results as pending
+  otherwise causes false stale-callback readiness failures. Remove this item
+  after an upgrade path and focused fixtures preserve confirmed completions
+  without dropping genuinely undelivered results or replaying upstream work.
 
 ## Local Commits
 

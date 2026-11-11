@@ -87,10 +87,24 @@ and exhausted revisions, and cross-connection credential/recovery lease guards.
 Clean local Sync and Solver image builds were attempted. Docker Hub resolution
 blocked the former; GitHub upstream access blocked the latter after pinned Debian
 packages installed. These attempts do not establish clean image-build success.
-Remote CI must report its own exact candidate results. The repository has no
-HeroUI setup secret, so its remote frontend check explicitly distinguishes source
-validation from the credentialed production build verified locally.
+At this integration stage, remote CI still needed its own exact candidate
+results and the repository had no HeroUI setup secret. The subsequent
+[2026-11-11 deployment](release-status.md#current-deployment-2026-11-11) built all
+three local images, completed a cache-free authorized Web build, configured the
+repository Actions secret, and verified the credentialed remote frontend build.
 
 Entire reports `worktree_path_not_discovered` for the managed checkout. Existing
 hook records are retained; no checkpoint trailer or session association was
 fabricated to conceal this traceability gap.
+
+## Authorized deployment follow-up
+
+The owner subsequently authorized replacing the existing deployment and saving
+the HeroUI installation key in GitHub Actions. Application source
+`d38644eb7906ed801013fffe8b46be3fb7bddc6a` is now deployed at
+`http://localhost:3080`; this follow-up does not create a release or version tag.
+Two stopped-volume archives and the previous images remain available for
+rollback. Runtime checks, data continuity, the legacy callback reconciliation,
+and the successful secret-aware CI run are recorded in the deployment receipt
+linked above. Existing upstream-site failures remain distinct from deployment
+health.
