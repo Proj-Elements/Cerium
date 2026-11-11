@@ -123,7 +123,10 @@ async function fixture(t) {
     dbPath: join(dir, "web.db"),
     dispatch: false,
     log: (value) => {
-      password = value.split(": ").at(-1);
+      const initial = value.match(
+        /Cerium admin password \(rotates on restart\): (\S+)/,
+      );
+      if (initial) password = initial[1];
     },
   });
   app.server.listen(0, "127.0.0.1");

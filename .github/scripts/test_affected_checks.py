@@ -96,6 +96,15 @@ class SelectionTests(unittest.TestCase):
         self.assertTrue(select_checks(["web/Dockerfile"])[0])
         self.assertTrue(select_checks(["compose.yaml"])[1])
 
+    def test_dotted_extensionless_helpers_keep_their_owning_tests(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            (root / "web/test").mkdir(parents=True)
+            (root / "web/src").mkdir(parents=True)
+            (root / "web/test/generated.test.mjs").write_text('import "../src/contracts.generated";', encoding="utf-8")
+            (root / "web/src/contracts.generated.ts").write_text('export const version = 1;', encoding="utf-8")
+            self.assertEqual(select_checks(["web/src/contracts.generated.ts"], root), (["web/test/generated.test.mjs"], False))
+
     def test_pull_request_uses_target_merge_base(self):
         git = Mock(side_effect=["merge-base\n", "web/server/store.mjs\0"])
         paths = changed_paths(

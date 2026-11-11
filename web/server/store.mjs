@@ -26,6 +26,7 @@ import {
   changeVisibility,
 } from "./store-history.mjs";
 import { iconType } from "./icon-content.mjs";
+import { siteIdentity } from "./backup.mjs";
 
 export class Store {
   constructor(path, interval = 900) {
@@ -82,8 +83,8 @@ export class Store {
       .prepare("INSERT OR IGNORE INTO settings VALUES(?,?)")
       .run("payment_presets", JSON.stringify(DEFAULT_PAYMENT_PRESETS));
     this.db.exec("UPDATE jobs SET state='pending' WHERE state='running'");
-    recoverRevisionBoundaries.call(this);
     recoverLegacyURLs.call(this);
+    recoverRevisionBoundaries.call(this);
   }
   get interval() {
     return Number(
@@ -262,16 +263,12 @@ export class Store {
       )
         throw new HttpError(400, "Maximum 200 sites");
       const duplicate = this.db
-        .prepare("SELECT id,config FROM sites WHERE id != ?")
+        .prepare("SELECT id,config,error FROM sites WHERE id != ?")
         .all(id ?? "")
         .some((r) => {
-          const c = JSON.parse(r.config);
           return (
-            c.type !== "others" &&
-            c.url === config.url &&
-            c.type === config.type &&
-            c.account === config.account &&
-            (c.user_id ?? 0) === config.user_id
+            config.type !== "others" &&
+            siteIdentity(JSON.parse(r.config), r.error) === siteIdentity(config)
           );
         });
       if (duplicate)

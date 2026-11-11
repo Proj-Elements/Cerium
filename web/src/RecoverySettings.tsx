@@ -44,7 +44,7 @@ export function RecoverySettings({
         导出完整恢复包
       </Button>
       <div className="backup-import">
-        <label htmlFor="recovery-file">完整恢复包 (.json.gz)</label>
+        <label htmlFor="recovery-file">完整恢复包 (.cerium.gz)</label>
         <input
           ref={input}
           id="recovery-file"

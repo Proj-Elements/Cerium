@@ -88,7 +88,7 @@ export async function downloadRecovery(base: string) {
     `${base}/data/recovery/export`,
     "application/gzip",
   );
-  await download(response, "cerium-recovery.json.gz");
+  await download(response, "cerium-recovery.cerium.gz");
 }
 export async function uploadRecovery(
   base: string,

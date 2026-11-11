@@ -1,6 +1,6 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { mkdtempSync, rmSync, statSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { DatabaseSync } from "node:sqlite";
@@ -101,6 +101,75 @@ test("maximum-size catalogs retain every multiplier model and price event in bac
     await exportRecoveryDatabase(store),
   );
   assert.equal(JSON.parse(recovered.changes[0].details).length, 1500);
+});
+
+test("disjoint maximum price catalogs retain the complete model union in every backup format", async (t) => {
+  const { store } = fixture(t),
+    id = store.save(manual);
+  const makeCatalog = (prefix) => ({
+    scope: "public",
+    groups: [
+      {
+        id: "prices",
+        name: "Prices",
+        prices: Array.from({ length: 10000 }, (_, index) => ({
+          model: `${prefix}-${index}`,
+          mode: "tokens",
+          input: 1,
+          output: 2,
+        })),
+      },
+    ],
+  });
+  const details = compareCatalogs(makeCatalog("before"), makeCatalog("after"));
+  assert.equal(details[0].price_changes.length, 20000);
+  store.db
+    .prepare(
+      "INSERT INTO catalog_changes(id,site_id,checked_at,details) VALUES(?,?,?,?)",
+    )
+    .run(
+      crypto.randomUUID(),
+      id,
+      new Date().toISOString(),
+      JSON.stringify(details),
+    );
+  for (const format of ["json", "sqlite"]) {
+    const parsed = await parseBackupAsync(
+      await serializeBackup(store, format),
+      format,
+    );
+    assert.equal(parsed.changes[0].details[0].price_changes.length, 20000);
+  }
+  const recovered = await parseRecoveryDatabase(
+    await exportRecoveryDatabase(store),
+  );
+  assert.equal(
+    JSON.parse(recovered.changes[0].details)[0].price_changes.length,
+    20000,
+  );
+});
+
+test("recovery exports compact snapshot copies without modifying the live database", async (t) => {
+  const { store, path } = fixture(t),
+    id = store.save(provider);
+  store.db.exec("PRAGMA journal_mode=DELETE");
+  store.db
+    .prepare("INSERT INTO settings VALUES('temporary_journal', zeroblob(?))")
+    .run(2 << 20);
+  store.db.exec("DELETE FROM settings WHERE key='temporary_journal'");
+  const originalSize = statSync(path).size,
+    freePages = store.db.prepare("PRAGMA freelist_count").get().freelist_count;
+  assert.ok(freePages > 0);
+  const bytes = await exportRecoveryDatabase(store);
+  assert.ok(bytes.length < originalSize / 2);
+  assert.equal(statSync(path).size, originalSize);
+  assert.equal(
+    store.db.prepare("PRAGMA freelist_count").get().freelist_count,
+    freePages,
+  );
+  const recovered = await parseRecoveryDatabase(bytes);
+  assert.equal(recovered.sites[0].id, id);
+  assert.equal(recovered.jobs[0].state, "pending");
 });
 
 test("backup workers read committed WAL data without touching request-thread exportData", async (t) => {

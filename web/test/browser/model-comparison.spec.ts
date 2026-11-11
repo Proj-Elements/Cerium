@@ -114,7 +114,9 @@ test("model comparison distinguishes recharge cost from credits and separates dy
   await page.getByLabel("请求次数", { exact: true }).fill("4");
   await expect(rows.first()).toContainText("Per request");
   await expect(rows.first()).toContainText("$1");
-  await expect(page.getByRole("status")).toContainText("1 个分组可计算");
+  await expect(
+    page.locator(".model-comparison").getByRole("status"),
+  ).toContainText("1 个分组可计算");
   await page.getByLabel("比较模型", { exact: true }).fill("cost-model-other");
   await expect(
     page.getByText("当前筛选范围没有这个完整模型 ID。", { exact: true }),
@@ -144,6 +146,10 @@ test("tiny prices and multipliers stay nonzero and comparison fits narrow screen
         () => document.documentElement.scrollWidth <= innerWidth,
       ),
     ).toBe(true);
+    const bounds = await page.locator(".comparison-cost").first().boundingBox();
+    expect(bounds).toBeTruthy();
+    expect(bounds!.x).toBeGreaterThanOrEqual(0);
+    expect(bounds!.x + bounds!.width).toBeLessThanOrEqual(390);
     await page.screenshot({
       path: `../artifacts/model-comparison-mobile-${theme}.png`,
       fullPage: true,

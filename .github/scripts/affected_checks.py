@@ -30,15 +30,13 @@ def source_dependencies(source, root):
     dependencies = set()
     try:
         text = (root / source).read_text(encoding="utf-8")
-    except (FileNotFoundError, UnicodeDecodeError):
+    except (FileNotFoundError, NotADirectoryError, IsADirectoryError, UnicodeDecodeError):
         return dependencies
     for imported in IMPORT.findall(text):
         candidate = (root / source).parent / imported
-        if candidate.suffix:
-            choices = [candidate]
-        else:
-            choices = [candidate.with_suffix(suffix) for suffix in (".ts", ".tsx", ".mjs", ".js", ".json")]
-            choices.extend(candidate / ("index" + suffix) for suffix in (".ts", ".tsx", ".mjs", ".js"))
+        choices = [candidate]
+        choices.extend(Path(str(candidate) + suffix) for suffix in (".ts", ".tsx", ".mjs", ".js", ".json"))
+        choices.extend(candidate / ("index" + suffix) for suffix in (".ts", ".tsx", ".mjs", ".js"))
         for choice in choices:
             try:
                 relative = choice.resolve().relative_to(root.resolve()).as_posix()

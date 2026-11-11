@@ -55,13 +55,16 @@ export function importData(input, mode = "merge") {
       byId = new Map(current.map((row) => [row.id, row])),
       byIdentity = new Map(
         current
-          .filter((row) => siteIdentity(JSON.parse(row.config)) !== null)
-          .map((row) => [siteIdentity(JSON.parse(row.config)), row]),
+          .filter(
+            (row) => siteIdentity(JSON.parse(row.config), row.error) !== null,
+          )
+          .map((row) => [siteIdentity(JSON.parse(row.config), row.error), row]),
       ),
       mapping = new Map(),
       imported = data.sites.map((entry) => {
         const old =
-          byId.get(entry.id) ?? byIdentity.get(siteIdentity(entry.config));
+          byId.get(entry.id) ??
+          byIdentity.get(siteIdentity(entry.config, entry.error));
         const originalId = old?.id ?? entry.id;
         const outstanding =
           this.db
@@ -88,13 +91,16 @@ export function importData(input, mode = "merge") {
     if (imported.length + (mode === "merge" ? retained.length : 0) > 200)
       throw new HttpError(400, "Maximum 200 sites");
     const identities = new Set();
-    for (const config of [
+    for (const entry of [
       ...(mode === "merge"
-        ? retained.map((row) => JSON.parse(row.config))
+        ? retained.map((row) => ({
+            config: JSON.parse(row.config),
+            error: row.error,
+          }))
         : []),
-      ...imported.map((entry) => entry.config),
+      ...imported,
     ]) {
-      const identity = siteIdentity(config);
+      const identity = siteIdentity(entry.config, entry.error);
       if (identity !== null && identities.has(identity))
         throw new HttpError(
           409,
@@ -257,11 +263,15 @@ export function recoverLegacyURLs() {
       .all()
       .map((row) => {
         const config = JSON.parse(row.config),
-          canonical = url(config.url);
+          escaped = config.url
+            .replace(/%(?![0-9a-f]{2})/gi, "%25")
+            .replace(/[?#]+$/, ""),
+          canonical = url(escaped);
         return {
           row,
           config,
           canonical,
+          repaired: escaped !== config.url,
           identity: siteIdentity({ ...config, url: canonical }),
         };
       }),
@@ -275,11 +285,16 @@ export function recoverLegacyURLs() {
     if (entry.identity !== null && !primary.has(entry.identity))
       primary.set(entry.identity, entry.row.id);
   }
-  for (const { row, config, canonical, identity } of entries) {
+  for (const { row, config, canonical, identity, repaired } of entries) {
     const owner = identity === null ? row.id : primary.get(identity),
       duplicate = owner !== row.id && migratedIdentities.has(identity);
     if (config.url === canonical && !(duplicate && config.enabled)) continue;
-    if (!duplicate && identity === null) {
+    if (
+      !duplicate &&
+      !repaired &&
+      identity === null &&
+      Math.max(row.revision, row.sync_revision) < Number.MAX_SAFE_INTEGER - 1
+    ) {
       this.save({ ...config, url: canonical }, row.id);
       continue;
     }
@@ -287,33 +302,38 @@ export function recoverLegacyURLs() {
       const normalized = validateSite({
           ...config,
           url: canonical,
-          enabled: duplicate ? false : config.enabled,
+          enabled: duplicate || repaired ? false : config.enabled,
         }),
-        syncRevision = row.sync_revision + 1;
+        syncRevision = Math.min(Number.MAX_SAFE_INTEGER, row.sync_revision + 1),
+        editRevision = Math.min(Number.MAX_SAFE_INTEGER, row.revision + 1),
+        preserveSnapshot = duplicate || config.type === "others";
       this.retireJobs(row.id);
       this.db
         .prepare(
-          `UPDATE sites SET config=?,revision=revision+1,sync_revision=?,next_sync=?,error=?,
+          `UPDATE sites SET config=?,revision=?,sync_revision=?,next_sync=?,error=?,
           snapshot=CASE WHEN ? THEN snapshot ELSE NULL END,fetched_at=CASE WHEN ? THEN fetched_at ELSE NULL END,
           last_checked=CASE WHEN ? THEN last_checked ELSE NULL END,warnings=CASE WHEN ? THEN warnings ELSE NULL END,
           favicon=NULL,favicon_blob=NULL,favicon_type=NULL,icon_revision=icon_revision+1 WHERE id=?`,
         )
         .run(
           JSON.stringify(normalized),
+          editRevision,
           syncRevision,
           Date.now(),
           duplicate
             ? `duplicate_identity: canonical URL duplicates site ${owner}; update URL/account/user ID to re-enable`
-            : null,
-          Number(duplicate),
-          Number(duplicate),
-          Number(duplicate),
-          Number(duplicate),
+            : repaired
+              ? "legacy_url_repair: URL was normalized to the current format; verify it before re-enabling"
+              : null,
+          Number(preserveSnapshot),
+          Number(preserveSnapshot),
+          Number(preserveSnapshot),
+          Number(preserveSnapshot),
           row.id,
         );
-      if (duplicate)
-        this.enqueue({ ...row, sync_revision: syncRevision }, "delete");
-      else if (normalized.enabled) this.enqueue(this.row(row.id));
+      if (duplicate || repaired) this.enqueue(this.row(row.id), "delete");
+      else if (normalized.enabled && normalized.type !== "others")
+        this.enqueue(this.row(row.id));
     });
   }
 }

@@ -104,6 +104,14 @@ try {
     };
   else if (workerData.operation === "recovery-export")
     result = await snapshot(workerData.path, (path) => {
+      const db = new DatabaseSync(path, { allowExtension: false });
+      try {
+        db.exec(
+          "PRAGMA trusted_schema=OFF; PRAGMA journal_mode=DELETE; VACUUM",
+        );
+      } finally {
+        db.close();
+      }
       if (statSync(path).size > RECOVERY_LIMIT)
         throw new HttpError(413, "Recovery database exceeds 512 MiB");
       return { bytes: readFileSync(path) };

@@ -74,7 +74,7 @@ test("full recovery export and import use the coordinated gzip endpoints", async
     });
   });
   await downloadRecovery("/admin/api");
-  assert.deepEqual(downloads, ["cerium-recovery.json.gz"]);
+  assert.deepEqual(downloads, ["cerium-recovery.cerium.gz"]);
   assert.deepEqual(await uploadRecovery("/admin/api", file), {
     restored: true,
     sites: 4,

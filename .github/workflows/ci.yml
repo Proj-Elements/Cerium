@@ -204,7 +204,8 @@ jobs:
           docker run --rm --network none --read-only --tmpfs /tmp:rw,nosuid,nodev,size=128m \
             --entrypoint python \
             --mount "type=bind,source=$PWD/solver/test_polling.py,target=/app/test_polling.py,readonly" \
-            "$image" -m unittest -v test_polling
+            --mount "type=bind,source=$PWD/solver/test_runner.py,target=/app/test_runner.py,readonly" \
+            "$image" -m unittest -v test_polling test_runner
 
   complete:
     name: Focused checks passed

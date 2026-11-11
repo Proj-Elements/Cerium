@@ -54,8 +54,27 @@
   max-height: 30rem;
 }
 
-.comparison-table {
-  min-width: 32rem;
+.model-comparison .comparison-table {
+  min-width: 0;
+}
+
+.model-comparison .comparison-table th:nth-child(2) {
+  width: 30%;
+}
+
+.model-comparison .comparison-table th:nth-child(3) {
+  width: 36%;
+}
+
+.model-comparison .comparison-table td:first-child {
+  min-width: 0;
+}
+
+.model-comparison .comparison-table th:not(:first-child),
+.model-comparison .comparison-table td:not(:first-child) {
+  text-align: left;
+  white-space: normal;
+  overflow-wrap: anywhere;
 }
 
 .comparison-table td small,

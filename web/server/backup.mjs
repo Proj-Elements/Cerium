@@ -59,8 +59,11 @@ function iconCache(value, state) {
     fail("Invalid cached favicon image");
   return { type: value.type, data: value.data };
 }
-export function siteIdentity(config) {
-  return config.type === "others"
+export function siteIdentity(config, error) {
+  return config.type === "others" ||
+    (config.enabled === false &&
+      typeof error === "string" &&
+      error.startsWith("duplicate_identity:"))
     ? null
     : JSON.stringify([
         config.url,
@@ -95,7 +98,7 @@ export function validateBackup(input) {
     )
       fail("Invalid backup site visibility");
     const config = site(entry.config),
-      identity = siteIdentity(config);
+      identity = siteIdentity(config, entry.error);
     if (identity !== null && identities.has(identity))
       fail("Duplicate backup site identity");
     if (identity !== null) identities.add(identity);
@@ -201,7 +204,7 @@ export function validateBackup(input) {
         if (
           !Array.isArray(detail.price_changes) ||
           !detail.price_changes.length ||
-          detail.price_changes.length > 10000
+          detail.price_changes.length > 20000
         )
           fail("Invalid price changes");
         const models = new Set();

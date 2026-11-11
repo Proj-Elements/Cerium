@@ -1,7 +1,7 @@
 import { spawnSync } from "node:child_process";
-import { existsSync, readdirSync, readFileSync } from "node:fs";
+import { existsSync, readdirSync, readFileSync, statSync } from "node:fs";
 import { createRequire } from "node:module";
-import { dirname, extname, join, resolve } from "node:path";
+import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 
 const repository = resolve(dirname(fileURLToPath(import.meta.url)), "../..");
@@ -34,17 +34,20 @@ for (const filename of sources) {
   );
   for (const [, imported] of imports) {
     const target = resolve(dirname(filename), imported);
-    const candidates = extname(target)
-      ? [target]
-      : [
-          ...[".ts", ".tsx", ".js", ".mjs", ".json"].map(
-            (extension) => target + extension,
-          ),
-          ...[".ts", ".tsx", ".js", ".mjs"].map((extension) =>
-            join(target, "index" + extension),
-          ),
-        ];
-    if (!candidates.some(existsSync))
+    const candidates = [
+      target,
+      ...[".ts", ".tsx", ".js", ".mjs", ".json"].map(
+        (extension) => target + extension,
+      ),
+      ...[".ts", ".tsx", ".js", ".mjs"].map((extension) =>
+        join(target, "index" + extension),
+      ),
+    ];
+    if (
+      !candidates.some(
+        (candidate) => existsSync(candidate) && statSync(candidate).isFile(),
+      )
+    )
       throw new Error(`Missing local import ${imported} in ${filename}`);
   }
 }

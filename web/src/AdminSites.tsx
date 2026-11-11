@@ -107,7 +107,7 @@ export function AdminSites({
                       ? "重新同步"
                       : "同步"}
                   </Button>
-                  {site.type === "newapi" && (
+                  {site.type !== "others" && (
                     <Button
                       size="sm"
                       variant="ghost"

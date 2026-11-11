@@ -71,6 +71,7 @@ export function ModelComparison({ sites }: { sites: Site[] }) {
             <label className="comparison-select">
               <span>比较计费方式</span>
               <select
+                aria-label="比较计费方式"
                 value={mode}
                 onChange={(event) => setMode(event.target.value)}
               >
@@ -81,6 +82,7 @@ export function ModelComparison({ sites }: { sites: Site[] }) {
             <label className="comparison-select">
               <span>比较费用单位</span>
               <select
+                aria-label="比较费用单位"
                 value={currency}
                 onChange={(event) => setCurrency(event.target.value)}
               >

@@ -161,44 +161,52 @@ test("admin history paginates beyond the first page and resets pagination when s
   ).toBeDisabled();
 });
 
-test("model discovery refresh requires deliberate confirmation and sends the explicit refresh contract", async ({
-  page,
-}) => {
-  const { base, directory } = await login(page);
-  const site = {
-    ...directory.sites.find(
-      (entry: { type: string }) => entry.type === "newapi",
-    ),
-    status: "ok",
-    enabled: true,
-  };
-  const submissions: unknown[] = [];
-  await page.route(
-    (url) => url.pathname === base + "/sites",
-    (route) => route.fulfill({ json: { ...directory, sites: [site] } }),
-  );
-  await page.route(
-    (url) => url.pathname === `${base}/sites/${site.id}/models/refresh`,
-    async (route) => {
-      submissions.push(route.request().postDataJSON());
-      await route.fulfill({ status: 202, json: { queued: true } });
-    },
-  );
-  await page.reload();
-  await page.getByRole("button", { name: "刷新模型列表", exact: true }).click();
-  const confirmation = page.getByRole("dialog");
-  await expect(confirmation).toContainText(/临时.*(密钥|令牌)|API Key/);
-  await expect(confirmation).toContainText(/费用|计费|消耗|付费/);
-  expect(submissions).toHaveLength(0);
-  await confirmation.getByRole("button", { name: "取消", exact: true }).click();
-  expect(submissions).toHaveLength(0);
+for (const type of ["newapi", "sub2api"])
+  test(`${type} model discovery refresh requires deliberate confirmation and sends the explicit refresh contract`, async ({
+    page,
+  }) => {
+    const { base, directory } = await login(page);
+    const site = {
+      ...directory.sites.find(
+        (entry: { type: string }) => entry.type === "newapi",
+      ),
+      type,
+      status: "ok",
+      enabled: true,
+    };
+    const submissions: unknown[] = [];
+    await page.route(
+      (url) => url.pathname === base + "/sites",
+      (route) => route.fulfill({ json: { ...directory, sites: [site] } }),
+    );
+    await page.route(
+      (url) => url.pathname === `${base}/sites/${site.id}/models/refresh`,
+      async (route) => {
+        submissions.push(route.request().postDataJSON());
+        await route.fulfill({ status: 202, json: { queued: true } });
+      },
+    );
+    await page.reload();
+    await page
+      .getByRole("button", { name: "刷新模型列表", exact: true })
+      .click();
+    const confirmation = page.getByRole("dialog");
+    await expect(confirmation).toContainText(/临时.*(密钥|令牌)|API Key/);
+    await expect(confirmation).toContainText(/费用|计费|消耗|付费/);
+    expect(submissions).toHaveLength(0);
+    await confirmation
+      .getByRole("button", { name: "取消", exact: true })
+      .click();
+    expect(submissions).toHaveLength(0);
 
-  await page.getByRole("button", { name: "刷新模型列表", exact: true }).click();
-  await page
-    .getByRole("dialog")
-    .getByRole("button", { name: "确认刷新模型", exact: true })
-    .click();
-  await expect.poll(() => submissions).toEqual([{ confirmed: true }]);
-  await expect(page.getByRole("dialog")).toHaveCount(0);
-  await expect(page.getByRole("status")).toContainText("模型");
-});
+    await page
+      .getByRole("button", { name: "刷新模型列表", exact: true })
+      .click();
+    await page
+      .getByRole("dialog")
+      .getByRole("button", { name: "确认刷新模型", exact: true })
+      .click();
+    await expect.poll(() => submissions).toEqual([{ confirmed: true }]);
+    await expect(page.getByRole("dialog")).toHaveCount(0);
+    await expect(page.getByRole("status")).toContainText("模型");
+  });

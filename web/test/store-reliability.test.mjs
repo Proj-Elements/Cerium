@@ -6,6 +6,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { Store } from "../server/store.mjs";
 import { url } from "../server/validation.mjs";
+import { validateBackup } from "../server/backup.mjs";
 
 const config = {
   name: "Reliability relay",
@@ -40,6 +41,55 @@ function result(job) {
 test("canonical provider URLs strip all trailing slashes", () => {
   assert.equal(url(config.url), "https://relay.example/prefix");
   assert.equal(url("https://relay.example////"), "https://relay.example");
+});
+
+test("legacy malformed percent escapes are repaired and disabled without preventing startup or backups", (t) => {
+  const dir = mkdtempSync(join(tmpdir(), "cerium-url-escape-restart-")),
+    path = join(dir, "web.db");
+  let store = new Store(path);
+  t.after(() => {
+    if (store.db.isOpen) store.close();
+    rmSync(dir, { recursive: true, force: true });
+  });
+  const id = store.save(config),
+    initial = store.db.prepare("SELECT * FROM jobs WHERE site_id=?").get(id),
+    legacy = {
+      ...JSON.parse(store.row(id).config),
+      url: "https://relay.example/%zz",
+    };
+  store.db
+    .prepare("UPDATE sites SET config=? WHERE id=?")
+    .run(JSON.stringify(legacy), id);
+  store.db
+    .prepare("UPDATE jobs SET payload=? WHERE id=?")
+    .run(
+      JSON.stringify({ ...JSON.parse(initial.payload), url: legacy.url }),
+      initial.id,
+    );
+  store.close();
+  store = new Store(path);
+  const row = store.row(id),
+    repaired = JSON.parse(row.config);
+  assert.equal(repaired.url, "https://relay.example/%25zz");
+  assert.equal(repaired.enabled, false);
+  assert.equal(repaired.password, config.password);
+  assert.match(row.error, /^legacy_url_repair:/);
+  assert.equal(store.sites().length, 0);
+  assert.equal(
+    store.db.prepare("SELECT state FROM jobs WHERE id=?").get(initial.id).state,
+    "superseded",
+  );
+  assert.equal(JSON.parse(store.nextJob().payload).operation, "delete");
+  assert.equal(validateBackup(store.exportData()).sites.length, 1);
+  store.close();
+  store = new Store(path);
+  assert.equal(store.row(id).revision, row.revision);
+  store.save(
+    { ...repaired, enabled: true, url: "https://relay.example/repaired" },
+    id,
+  );
+  assert.equal(store.sites().length, 1);
+  assert.equal(store.row(id).error, null);
 });
 
 test("startup canonicalizes legacy provider URLs and supersedes incompatible queued payloads", (t) => {
@@ -84,6 +134,43 @@ test("startup canonicalizes legacy provider URLs and supersedes incompatible que
   store = new Store(path);
   assert.equal(store.row(id).revision, 2);
   assert.equal(store.nextJob(), undefined);
+});
+
+test("URL migration and revision exhaustion recover together before dispatch", (t) => {
+  const dir = mkdtempSync(join(tmpdir(), "cerium-url-boundary-restart-")),
+    path = join(dir, "web.db");
+  let store = new Store(path);
+  t.after(() => {
+    if (store.db.isOpen) store.close();
+    rmSync(dir, { recursive: true, force: true });
+  });
+  const id = store.save(config),
+    legacy = {
+      ...JSON.parse(store.row(id).config),
+      url: "https://relay.example/%zz",
+    };
+  store.db
+    .prepare("UPDATE sites SET config=?,revision=?,sync_revision=? WHERE id=?")
+    .run(
+      JSON.stringify(legacy),
+      Number.MAX_SAFE_INTEGER,
+      Number.MAX_SAFE_INTEGER,
+      id,
+    );
+  store.close();
+  store = new Store(path);
+  const repaired = store.sites(true)[0];
+  assert.notEqual(repaired.id, id);
+  assert.equal(repaired.revision, 1);
+  assert.equal(repaired.enabled, false);
+  assert.equal(repaired.url, "https://relay.example/%25zz");
+  assert.equal(validateBackup(store.exportData()).sites.length, 1);
+  assert.ok(
+    store.db
+      .prepare("SELECT revision FROM jobs WHERE state='pending'")
+      .all()
+      .every((job) => Number.isSafeInteger(job.revision)),
+  );
 });
 
 test("conflicting canonical URLs preserve legacy records without blocking startup", (t) => {
@@ -131,6 +218,15 @@ test("conflicting canonical URLs preserve legacy records without blocking startu
   );
   assert.equal(store.sites(true).length, 2);
   assert.equal(recoveredConfig.password, config.password);
+  const restored = fixture(t);
+  restored.importData(store.exportData(), "replace");
+  assert.equal(restored.sites(true).length, 2);
+  assert.equal(restored.sites().length, 1);
+  store.save({ ...config, name: "Primary remains editable" }, canonicalId);
+  assert.equal(
+    JSON.parse(store.row(canonicalId).config).name,
+    "Primary remains editable",
+  );
   assert.throws(
     () => store.save({ ...recoveredConfig, enabled: true }, legacyId),
     { status: 409 },
