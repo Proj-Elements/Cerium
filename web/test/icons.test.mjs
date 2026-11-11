@@ -10,6 +10,12 @@ import {
   findIcons,
   createIconResolver,
 } from "../server/icons.mjs";
+import { iconType } from "../server/icon-content.mjs";
+
+const png = Buffer.from(
+  "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNk+A8AAQUBAScY42YAAAAASUVORK5CYII=",
+  "base64",
+);
 
 test("icon discovery rejects private, metadata, mapped and reserved IP addresses", async () => {
   for (const ip of [
@@ -147,7 +153,7 @@ test("tries common favicon locations under both the site prefix and the origin",
     "/favicon.png": {
       status: 200,
       type: "application/octet-stream",
-      body: Buffer.from("89504e470d0a1a0a0000000d49484452", "hex"),
+      body: png,
     },
   });
   const result = await createIconResolver(network)({
@@ -514,4 +520,64 @@ test("reads relative icon links, rejects external trackers, deduplicates and bou
     ),
     ["https://relay.example/app/icon.png"],
   );
+});
+
+test("requires complete image structures instead of recognizable signatures", () => {
+  const gif = Buffer.from(
+    "R0lGODlhAQABAIAAAAAAAP///yH5BAEAAAAALAAAAAABAAEAAAIBRAA7",
+    "base64",
+  );
+  assert.equal(iconType(png, "application/octet-stream"), "image/png");
+  assert.equal(iconType(gif, "image/gif"), "image/gif");
+  assert.equal(iconType(Buffer.from(svg), "image/svg+xml"), "image/svg+xml");
+  const ico = Buffer.alloc(22 + png.length);
+  ico.writeUInt16LE(1, 2);
+  ico.writeUInt16LE(1, 4);
+  ico[6] = ico[7] = 1;
+  ico.writeUInt16LE(1, 10);
+  ico.writeUInt16LE(32, 12);
+  ico.writeUInt32LE(png.length, 14);
+  ico.writeUInt32LE(22, 18);
+  png.copy(ico, 22);
+  assert.equal(iconType(ico, "image/x-icon"), "image/x-icon");
+  for (const [body, type] of [
+    [png.subarray(0, 8), "image/png"],
+    [png.subarray(0, png.length - 1), "image/png"],
+    [gif.subarray(0, 6), "image/gif"],
+    [gif.subarray(0, gif.length - 1), "image/gif"],
+    [ico.subarray(0, ico.length - 1), "image/x-icon"],
+    [Buffer.from("<svg><path>", "utf8"), "image/svg+xml"],
+    [Buffer.from("<svg><path></svg>", "utf8"), "image/svg+xml"],
+    [Buffer.from("<html><svg/></html>", "utf8"), "image/svg+xml"],
+    [Buffer.from("ffd8ff", "hex"), "image/jpeg"],
+    [Buffer.from("RIFF\u0000\u0000\u0000\u0000WEBP", "binary"), "image/webp"],
+    [Buffer.from("00000018667479706176696600000000", "hex"), "image/avif"],
+    [Buffer.from("BM"), "image/bmp"],
+  ])
+    assert.equal(iconType(body, type), "", `${type} ${body.length} bytes`);
+  const badChecksum = Buffer.from(png);
+  badChecksum[20] ^= 1;
+  assert.equal(iconType(badChecksum, "image/png"), "");
+  ico.writeUInt32LE(ico.length, 18);
+  assert.equal(iconType(ico, "image/x-icon"), "");
+});
+
+test("skips truncated advertised icons and discovers a complete fallback", async () => {
+  const network = transport({
+    "/": {
+      status: 200,
+      body: '<link rel="icon" href="/truncated.png"><link rel="icon" href="/complete.png">',
+    },
+    "/truncated.png": {
+      status: 200,
+      type: "image/png",
+      body: png.subarray(0, 8),
+    },
+    "/complete.png": { status: 200, type: "image/png", body: png },
+  });
+  const result = await createIconResolver(network)({
+    url: "https://relay.example",
+  });
+  assert.equal(result.selected, "https://relay.example/complete.png");
+  assert.deepEqual(result.image.body, png);
 });
