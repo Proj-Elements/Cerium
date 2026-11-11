@@ -15,19 +15,39 @@ import { Models } from "./Models";
 import closeIcon from "./assets/figma-close.svg";
 import type { Site } from "./types";
 
+type DetailFilters = {
+  selected: string | null;
+  family: FamilyFilter;
+  range: RateRange;
+  query: string;
+  modelQuery: string;
+};
+
 export function SiteDetails({
   site,
   close,
   initialGroup,
+  navigation,
 }: {
   site: Site;
   close: () => void;
   initialGroup?: string;
+  navigation?: DetailFilters & {
+    onChange: (patch: Partial<DetailFilters>, replace?: boolean) => void;
+  };
 }) {
-  const [selected, setSelected] = useState<string | null>(initialGroup ?? null);
-  const [family, setFamily] = useState<FamilyFilter>("all");
-  const [range, setRange] = useState<RateRange>(null);
-  const [query, setQuery] = useState("");
+  const [local, setLocal] = useState<DetailFilters>({
+    selected: initialGroup ?? null,
+    family: "all",
+    range: null,
+    query: "",
+    modelQuery: "",
+  });
+  const { selected, family, range, query } = navigation ?? local;
+  const update = (patch: Partial<DetailFilters>, replace = false) => {
+    if (navigation) navigation.onChange(patch, replace);
+    else setLocal((previous) => ({ ...previous, ...patch }));
+  };
   const backButton = useRef<HTMLButtonElement>(null);
   const detailSheet = useRef<HTMLElement>(null);
   const groups = site.catalog?.groups ?? [];
@@ -38,7 +58,7 @@ export function SiteDetails({
   const minimum = lowestRate(site);
   const returnToGroups = () => {
     const id = selected;
-    setSelected(null);
+    update({ selected: null });
     requestAnimationFrame(() => {
       const badge = [
         ...(detailSheet.current?.querySelectorAll<HTMLButtonElement>(
@@ -160,16 +180,14 @@ export function SiteDetails({
                     groups={groups}
                     value={range}
                     onChange={(value) => {
-                      setRange(value);
-                      setSelected(null);
+                      update({ range: value, selected: null }, true);
                     }}
                   />
                   <FamilyFilters
                     groups={groups}
                     value={family}
                     onChange={(value) => {
-                      setFamily(value);
-                      setSelected(null);
+                      update({ family: value, selected: null });
                     }}
                   />
                   <TextField
@@ -177,8 +195,7 @@ export function SiteDetails({
                     className="search group-search"
                     value={query}
                     onChange={(value) => {
-                      setQuery(value);
-                      setSelected(null);
+                      update({ query: value, selected: null }, true);
                     }}
                     variant="secondary"
                   >
@@ -194,9 +211,7 @@ export function SiteDetails({
                         size="sm"
                         variant="ghost"
                         onPress={() => {
-                          setFamily("all");
-                          setRange(null);
-                          setQuery("");
+                          update({ family: "all", range: null, query: "" });
                         }}
                       >
                         清除分组筛选
@@ -209,7 +224,7 @@ export function SiteDetails({
                         key={item.id}
                         group={item}
                         selected={selected === item.id}
-                        onPress={() => setSelected(item.id)}
+                        onPress={() => update({ selected: item.id })}
                       />
                     ))}
                   </div>
@@ -262,7 +277,20 @@ export function SiteDetails({
                     <img src={closeIcon} alt="" width="16" height="16" />
                   </Modal.CloseTrigger>
                 </header>
-                <Models group={group} type={site.type} key={group.id} />
+                <Models
+                  group={group}
+                  type={site.type}
+                  key={group.id}
+                  filter={
+                    navigation
+                      ? {
+                          query: navigation.modelQuery,
+                          onChange: (modelQuery) =>
+                            update({ modelQuery }, true),
+                        }
+                      : undefined
+                  }
+                />
               </section>
             )}
           </Modal.Dialog>

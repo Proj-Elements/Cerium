@@ -1,104 +1,93 @@
-import { useEffect, useState } from "react";
+import { useMemo, useState } from "react";
 import { Button, Input, Skeleton, TextField } from "@heroui/react";
-import { api, message } from "./api";
 import { Empty, Glyph, Header, IconButton, Select } from "./ui";
 import { lowestRate } from "./relay";
 import { FamilyFilters, RateFilter } from "./GroupFilters";
-import {
-  matchesGroup,
-  minimumRate,
-  type FamilyFilter,
-  type RateRange,
-} from "./groups";
+import { minimumRate } from "./groups";
 import { ChangeDetail, ChangesDialog } from "./Changes";
-import { modelDisplayName } from "./model-display";
+import { matchCatalogSite } from "./catalog-filter";
+import { ModelComparison } from "./ModelComparison";
 import { SiteCard } from "./SiteCard";
 import { SiteDetails } from "./SiteDetails";
-import type { ChangeNotice, Directory, Site } from "./types";
+import { useCatalogRoute } from "./use-catalog-route";
+import { useDirectory } from "./use-directory";
+import type { ChangeNotice, Site } from "./types";
 
 export { SiteDetails } from "./SiteDetails";
 
+const noSites: Site[] = [];
+
 export default function CatalogPage() {
-  const [data, setData] = useState<Directory | null>(null);
-  const [error, setError] = useState("");
-  const [loading, setLoading] = useState(false);
-  const [query, setQuery] = useState("");
-  const [type, setType] = useState("all");
-  const [payment, setPayment] = useState("all");
-  const [sort, setSort] = useState("default");
-  const [family, setFamily] = useState<FamilyFilter>("all");
-  const [range, setRange] = useState<RateRange>(null);
-  const [selected, setSelected] = useState<string | null>(null);
+  const { data, error, loading, load } = useDirectory();
+  const [route, navigate] = useCatalogRoute();
+  const { query, type, payment, sort, family, range, site: selected } = route;
   const [showChanges, setShowChanges] = useState(false);
-  async function load() {
-    setLoading(true);
-    try {
-      setData(await api<Directory>("/api/sites"));
-      setError("");
-    } catch (e) {
-      setError(message(e));
-    } finally {
-      setLoading(false);
-    }
-  }
-  useEffect(() => {
-    void load();
-    const timer = window.setInterval(() => {
-      if (!document.hidden) void load();
-    }, 15000);
-    return () => clearInterval(timer);
-  }, []);
-  const sites = data?.sites ?? [];
+  const sites = data?.sites ?? noSites;
   const changes: ChangeNotice[] = data?.changes ?? [];
-  const allGroups = sites.flatMap((site) => site.catalog?.groups ?? []);
+  const allGroups = useMemo(
+    () => sites.flatMap((site) => site.catalog?.groups ?? []),
+    [sites],
+  );
   const groupFiltering = family !== "all" || range !== null;
-  const matchingGroups = (site: Site) =>
-    (site.catalog?.groups ?? []).filter((group) =>
-      matchesGroup(group, family, range),
-    );
-  const siteMinimum = (site: Site) =>
-    groupFiltering ? minimumRate(matchingGroups(site)) : lowestRate(site);
+  const matches = useMemo(
+    () =>
+      new Map(
+        sites.map((site) => [
+          site.id,
+          matchCatalogSite(site, { family, range, query }),
+        ]),
+      ),
+    [sites, family, range, query],
+  );
   const methods = [...new Set(sites.flatMap((site) => site.payment_methods))];
-  const filtered = sites
-    .filter(
-      (site) =>
-        (type === "all" || site.type === type) &&
-        (payment === "all" || site.payment_methods.includes(payment)) &&
-        (!groupFiltering || matchingGroups(site).length > 0) &&
-        [
-          site.name,
-          site.url,
-          site.description,
-          ...(site.catalog?.groups ?? []).flatMap((group) => [
-            group.name,
-            ...group.models.flatMap((model) => [
-              model,
-              modelDisplayName(model),
-            ]),
-          ]),
-        ]
-          .join(" ")
-          .toLowerCase()
-          .includes(query.trim().toLowerCase()),
-    )
-    .sort((a, b) =>
-      sort === "rate"
-        ? (siteMinimum(a) ?? Infinity) - (siteMinimum(b) ?? Infinity)
-        : sort === "recent"
-          ? (Date.parse(b.fetched_at ?? "") || 0) -
-            (Date.parse(a.fetched_at ?? "") || 0)
-          : 0,
-    );
+  const filtered = useMemo(() => {
+    const siteMinimum = (site: Site) =>
+      matches.get(site.id)?.groupFiltering
+        ? minimumRate(matches.get(site.id)!.groups)
+        : lowestRate(site);
+    return sites
+      .filter(
+        (site) =>
+          (type === "all" || site.type === type) &&
+          (payment === "all" || site.payment_methods.includes(payment)) &&
+          matches.get(site.id)!.matches,
+      )
+      .sort((a, b) =>
+        sort === "rate"
+          ? (siteMinimum(a) ?? Infinity) - (siteMinimum(b) ?? Infinity)
+          : sort === "recent"
+            ? (Date.parse(b.fetched_at ?? "") || 0) -
+              (Date.parse(a.fetched_at ?? "") || 0)
+            : 0,
+      );
+  }, [sites, matches, type, payment, sort]);
+  const comparisonSites = useMemo(
+    () =>
+      filtered.map((site) =>
+        matches.get(site.id)!.groupFiltering && site.catalog
+          ? {
+              ...site,
+              catalog: {
+                ...site.catalog,
+                groups: matches.get(site.id)!.groups,
+              },
+            }
+          : site,
+      ),
+    [filtered, matches],
+  );
   const selectedSite = sites.find((site) => site.id === selected);
   const activeFilters = Boolean(
     query || type !== "all" || payment !== "all" || groupFiltering,
   );
   const clear = () => {
-    setQuery("");
-    setType("all");
-    setPayment("all");
-    setFamily("all");
-    setRange(null);
+    navigate({
+      query: "",
+      type: "all",
+      payment: "all",
+      family: "all",
+      range: null,
+    });
   };
   return (
     <div className="shell catalog-shell">
@@ -111,7 +100,7 @@ export default function CatalogPage() {
           <span className="announcement-label">倍率动态</span>
           <div className="announcement-text">
             <strong>{changes[0].site_name}</strong>
-            <ChangeDetail change={changes[0].details[0]} />
+            <ChangeDetail compact change={changes[0].details[0]} />
             {changes[0].details.length > 1 && (
               <span className="muted">
                 等 {changes[0].details.length} 项变动
@@ -158,7 +147,7 @@ export default function CatalogPage() {
               aria-label="搜索站点或模型"
               className="search"
               value={query}
-              onChange={setQuery}
+              onChange={(query) => navigate({ query }, true)}
               variant="secondary"
             >
               <Glyph name="magnifier" />
@@ -168,7 +157,7 @@ export default function CatalogPage() {
               <Select
                 label="站点类型"
                 value={type}
-                onChange={setType}
+                onChange={(type) => navigate({ type })}
                 options={[
                   { value: "all", label: "所有类型" },
                   { value: "newapi", label: "NewAPI" },
@@ -179,7 +168,7 @@ export default function CatalogPage() {
               <Select
                 label="充值方式"
                 value={payment}
-                onChange={setPayment}
+                onChange={(payment) => navigate({ payment })}
                 options={[
                   { value: "all", label: "所有充值方式" },
                   ...methods.map((method) => ({
@@ -189,14 +178,18 @@ export default function CatalogPage() {
                 ]}
               />
             </div>
-            <RateFilter groups={allGroups} value={range} onChange={setRange} />
+            <RateFilter
+              groups={allGroups}
+              value={range}
+              onChange={(range) => navigate({ range }, true)}
+            />
           </div>
           <div className="list-caption">
             <div className="catalog-family-row">
               <FamilyFilters
                 groups={allGroups}
                 value={family}
-                onChange={setFamily}
+                onChange={(family) => navigate({ family })}
               />
               <div className="filter-summary">
                 <span>
@@ -213,7 +206,7 @@ export default function CatalogPage() {
               <Select
                 label="排序方式"
                 value={sort}
-                onChange={setSort}
+                onChange={(sort) => navigate({ sort })}
                 options={[
                   { value: "default", label: "默认排序" },
                   { value: "rate", label: "最低倍率优先" },
@@ -225,6 +218,7 @@ export default function CatalogPage() {
               </span>
             </div>
           </div>
+          <ModelComparison sites={comparisonSites} />
           {error && (
             <div className="notice error" role="alert">
               <Glyph name="info" size={16} />
@@ -278,9 +272,11 @@ export default function CatalogPage() {
                   site={site}
                   index={index}
                   matchingGroups={
-                    groupFiltering ? matchingGroups(site) : undefined
+                    matches.get(site.id)!.groupFiltering
+                      ? matches.get(site.id)!.groups
+                      : undefined
                   }
-                  open={() => setSelected(site.id)}
+                  open={() => navigate({ site: site.id })}
                 />
               ))}
             </div>
@@ -297,7 +293,35 @@ export default function CatalogPage() {
         <SiteDetails
           site={selectedSite}
           key={selectedSite.id}
-          close={() => setSelected(null)}
+          close={() => navigate({ site: null })}
+          navigation={{
+            selected: route.group,
+            query: route.groupQuery,
+            family: route.groupFamily,
+            range: route.groupRange,
+            modelQuery: route.modelQuery,
+            onChange: (patch, replace) =>
+              navigate(
+                {
+                  ...(Object.hasOwn(patch, "selected")
+                    ? { group: patch.selected }
+                    : {}),
+                  ...(Object.hasOwn(patch, "query")
+                    ? { groupQuery: patch.query }
+                    : {}),
+                  ...(Object.hasOwn(patch, "family")
+                    ? { groupFamily: patch.family }
+                    : {}),
+                  ...(Object.hasOwn(patch, "range")
+                    ? { groupRange: patch.range }
+                    : {}),
+                  ...(Object.hasOwn(patch, "modelQuery")
+                    ? { modelQuery: patch.modelQuery }
+                    : {}),
+                },
+                replace,
+              ),
+          }}
         />
       )}
       {showChanges && (
@@ -307,7 +331,7 @@ export default function CatalogPage() {
           close={() => setShowChanges(false)}
           onSite={(id) => {
             setShowChanges(false);
-            setSelected(id);
+            navigate({ site: id });
           }}
         />
       )}

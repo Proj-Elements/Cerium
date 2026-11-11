@@ -13,8 +13,18 @@ import {
 import { modelDisplayName } from "./model-display";
 import type { Group } from "./types";
 
-export function Models({ group, type }: { group: Group; type: string }) {
-  const [query, setQuery] = useState("");
+export function Models({
+  group,
+  type,
+  filter,
+}: {
+  group: Group;
+  type: string;
+  filter?: { query: string; onChange: (query: string) => void };
+}) {
+  const [localQuery, setLocalQuery] = useState("");
+  const query = filter?.query ?? localQuery;
+  const setQuery = filter?.onChange ?? setLocalQuery;
   const [limit, setLimit] = useState(30);
   const reference = useModelReference();
   const prices = useMemo(
