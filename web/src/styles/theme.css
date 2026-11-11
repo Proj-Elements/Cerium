@@ -1,0 +1,94 @@
+@theme {
+  --font-sans: "Manrope Variable", "PingFang SC", "Microsoft YaHei", sans-serif;
+  --font-mono: "IBM Plex Mono", monospace;
+}
+@font-face {
+  font-family: "Manrope Variable";
+  font-style: normal;
+  font-weight: 200 800;
+  font-display: swap;
+  src: url("@fontsource-variable/manrope/files/manrope-latin-wght-normal.woff2")
+    format("woff2-variations");
+}
+:root,
+.light,
+html:not(.dark) {
+  color-scheme: light;
+  --background: oklch(98% 0.005 255);
+  --foreground: oklch(26% 0.033 258);
+  --surface: oklch(100% 0 0);
+  --surface-foreground: var(--foreground);
+  --surface-secondary: oklch(96.7% 0.008 255);
+  --surface-secondary-foreground: var(--foreground);
+  --surface-tertiary: oklch(94% 0.012 255);
+  --surface-tertiary-foreground: var(--foreground);
+  --overlay: var(--surface);
+  --overlay-foreground: var(--foreground);
+  --accent: oklch(56% 0.205 256);
+  --accent-foreground: oklch(100% 0 0);
+  --accent-soft: oklch(94% 0.03 255);
+  --accent-soft-foreground: oklch(47% 0.16 254);
+  --muted: oklch(50.5% 0.024 255);
+  --border: oklch(91% 0.011 255);
+  --separator: var(--border);
+  --field-background: var(--surface-secondary);
+  --field-foreground: var(--foreground);
+  --field-placeholder: var(--muted);
+  --default: oklch(95.5% 0.01 255);
+  --default-foreground: oklch(43% 0.033 255);
+  --success: oklch(48% 0.12 160);
+  --success-soft: oklch(96% 0.025 160);
+  --success-soft-foreground: oklch(39% 0.09 160);
+  --warning: oklch(57% 0.135 65);
+  --warning-soft: oklch(96% 0.03 75);
+  --warning-soft-foreground: oklch(43% 0.12 65);
+  --danger: oklch(55% 0.2 25);
+  --danger-soft: oklch(96% 0.025 25);
+  --danger-soft-foreground: oklch(47% 0.17 25);
+  --focus: var(--accent);
+  --radius: 0.625rem;
+  --shadow-surface:
+    0 2px 4px oklch(30% 0.025 255 / 0.025),
+    0 10px 30px oklch(30% 0.025 255 / 0.025);
+  --shadow-overlay:
+    0 2px 8px #0000000f, 0 -6px 12px #00000008, 0 14px 28px #00000014;
+  --surface-shadow: var(--shadow-surface);
+  --overlay-shadow: var(--shadow-overlay);
+  --motion-short: 160ms;
+  --motion-panel: 240ms;
+  --motion-ease: cubic-bezier(0.2, 0.8, 0.2, 1);
+}
+.dark {
+  color-scheme: dark;
+  --background: oklch(18.5% 0.018 258);
+  --foreground: oklch(94% 0.008 255);
+  --surface: oklch(23% 0.02 258);
+  --surface-secondary: oklch(26% 0.022 258);
+  --surface-tertiary: oklch(30% 0.026 258);
+  --overlay: oklch(23% 0.02 258);
+  --accent: oklch(73% 0.15 251);
+  --accent-foreground: oklch(18% 0.04 258);
+  --accent-soft: oklch(29% 0.06 255);
+  --accent-soft-foreground: oklch(79% 0.12 251);
+  --muted: oklch(72% 0.025 255);
+  --border: oklch(33% 0.023 258);
+  --default: oklch(30% 0.025 258);
+  --default-foreground: oklch(87% 0.015 255);
+  --success: oklch(75% 0.13 160);
+  --success-soft: oklch(28% 0.04 160);
+  --success-soft-foreground: oklch(79% 0.12 160);
+  --warning: oklch(81% 0.13 75);
+  --warning-soft: oklch(29% 0.04 65);
+  --warning-soft-foreground: oklch(84% 0.12 75);
+  --danger: oklch(76% 0.14 25);
+  --danger-soft: oklch(29% 0.05 25);
+  --danger-soft-foreground: oklch(84% 0.11 25);
+  --shadow-surface:
+    0 0 0 1px oklch(100% 0 0 / 0.055) inset, 0 2px 4px #00000028,
+    0 12px 30px #00000038;
+  --shadow-overlay:
+    0 0 0 1px oklch(100% 0 0 / 0.1) inset, 0 4px 12px #00000040,
+    0 20px 44px #00000058;
+  --surface-shadow: var(--shadow-surface);
+  --overlay-shadow: var(--shadow-overlay);
+}
