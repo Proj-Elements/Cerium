@@ -198,6 +198,9 @@ func (s *Store) Import(ctx context.Context, r io.Reader) (int, error) {
 		case err == nil:
 			changed := password != c.Password || token != c.AccessToken
 			if changed {
+				if err = retainProbeCleanup(ctx, tx, id); err != nil {
+					return 0, err
+				}
 				if _, err = tx.ExecContext(ctx, "DELETE FROM sessions WHERE credential_id=?", id); err != nil {
 					return 0, err
 				}
@@ -335,7 +338,15 @@ FROM credentials c LEFT JOIN snapshots s ON s.credential_id=c.id ORDER BY c.id`)
 }
 
 func (s *Store) Remove(ctx context.Context, id int64) error {
-	r, err := s.db.ExecContext(ctx, "DELETE FROM credentials WHERE id=?", id)
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback()
+	if err = retainProbeCleanup(ctx, tx, id); err != nil {
+		return err
+	}
+	r, err := tx.ExecContext(ctx, "DELETE FROM credentials WHERE id=?", id)
 	if err != nil {
 		return err
 	}
@@ -343,7 +354,10 @@ func (s *Store) Remove(ctx context.Context, id int64) error {
 	if err == nil && n == 0 {
 		return errors.New("credential not found")
 	}
-	return err
+	if err != nil {
+		return err
+	}
+	return tx.Commit()
 }
 
 func (s *Store) acquire(ctx context.Context, id int64, owner string, until time.Time) (bool, error) {

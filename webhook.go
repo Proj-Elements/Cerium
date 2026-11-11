@@ -22,6 +22,20 @@ type Webhook struct {
 	client *http.Client
 }
 
+// WebhookError reports the callback status without retaining its body or URL.
+type WebhookError struct {
+	Status int
+}
+
+func (e *WebhookError) Error() string {
+	return fmt.Sprintf("webhook returned HTTP %d", e.Status)
+}
+
+func (e *WebhookError) permanent() bool {
+	return e.Status == http.StatusBadRequest || e.Status == http.StatusConflict ||
+		e.Status == http.StatusGone || e.Status == http.StatusRequestEntityTooLarge || e.Status == http.StatusUnprocessableEntity
+}
+
 func NewWebhook(rawURL, secret string, timeout time.Duration) (*Webhook, error) {
 	u, err := url.Parse(rawURL)
 	if err != nil || u.Hostname() == "" || (u.Scheme != "https" && u.Scheme != "http") || u.User != nil || u.Fragment != "" {
@@ -65,7 +79,7 @@ func (w *Webhook) Publish(ctx context.Context, result Result) error {
 	defer resp.Body.Close()
 	_, _ = io.Copy(io.Discard, io.LimitReader(resp.Body, 4096))
 	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
-		return fmt.Errorf("webhook returned HTTP %d", resp.StatusCode)
+		return &WebhookError{Status: resp.StatusCode}
 	}
 	return nil
 }

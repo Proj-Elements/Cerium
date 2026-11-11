@@ -2,6 +2,7 @@ package cerium
 
 import (
 	"bytes"
+	"compress/gzip"
 	"context"
 	"crypto/hmac"
 	"crypto/sha256"
@@ -17,7 +18,7 @@ import (
 	"time"
 )
 
-const maxRecoveryBytes = 64 << 20
+const maxRecoveryBytes = 256 << 20
 
 var errRecoverySize = errors.New("recovery payload exceeds limit")
 
@@ -68,7 +69,7 @@ func (b *Bridge) recovery(w http.ResponseWriter, r *http.Request, body []byte, g
 			b.recoveryResponse(w, http.StatusInternalServerError, map[string]any{"error": "recovery_export_failed", "code": "recovery_export_failed", "stage": "recovery"})
 			return
 		}
-		b.recoveryResponse(w, http.StatusOK, archive)
+		b.recoveryResponse(w, http.StatusOK, archive, strings.Contains(r.Header.Get("Accept-Encoding"), "gzip"))
 		return
 	}
 	var archive recoveryArchive
@@ -104,7 +105,7 @@ func decodeRecovery(body []byte, target any) error {
 	return nil
 }
 
-func (b *Bridge) recoveryResponse(w http.ResponseWriter, status int, value any) {
+func (b *Bridge) recoveryResponse(w http.ResponseWriter, status int, value any, compressed ...bool) {
 	body, err := json.Marshal(value)
 	if err != nil || len(body) >= maxRecoveryBytes {
 		status, body = http.StatusRequestEntityTooLarge, []byte(`{"error":"recovery_size_limit","code":"recovery_size_limit","stage":"recovery"}`)
@@ -118,6 +119,15 @@ func (b *Bridge) recoveryResponse(w http.ResponseWriter, status int, value any) 
 	w.Header().Set("Cache-Control", "no-store")
 	w.Header().Set("X-Cerium-Timestamp", timestamp)
 	w.Header().Set("X-Cerium-Signature", "sha256="+hex.EncodeToString(mac.Sum(nil)))
+	if len(compressed) > 0 && compressed[0] {
+		w.Header().Set("Content-Encoding", "gzip")
+		w.Header().Set("Vary", "Accept-Encoding")
+		w.WriteHeader(status)
+		writer := gzip.NewWriter(w)
+		writer.Write(body)
+		writer.Close()
+		return
+	}
 	w.WriteHeader(status)
 	w.Write(body)
 }
