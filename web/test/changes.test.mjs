@@ -41,7 +41,7 @@ function fixture(t) {
       url: config.url,
       type: config.type,
       checked_at: new Date().toISOString(),
-      catalog: snapshot,
+      ...(snapshot === undefined ? {} : { catalog: snapshot }),
       ...extra,
     };
     store.accept(result);
