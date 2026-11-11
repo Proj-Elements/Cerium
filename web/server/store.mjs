@@ -10,13 +10,15 @@ import {
   syncInterval,
   paymentPresets,
   DEFAULT_PAYMENT_PRESETS,
+  syncResult,
 } from "./validation.mjs";
 import { compareCatalogs } from "./changes.mjs";
-import { validateBackup, siteIdentity } from "./backup.mjs";
+import { validateBackup, siteIdentity, isValidatedBackup } from "./backup.mjs";
 import { iconType } from "./icon-content.mjs";
 
 export class Store {
   constructor(path, interval = 900) {
+    this.path = path;
     mkdirSync(dirname(path), { recursive: true, mode: 0o700 });
     this.db = new DatabaseSync(path);
     chmodSync(path, 0o600);
@@ -46,9 +48,14 @@ export class Store {
         ["favicon", "TEXT"],
         ["favicon_blob", "BLOB"],
         ["favicon_type", "TEXT"],
+        ["sync_revision", "INTEGER"],
+        ["icon_revision", "INTEGER NOT NULL DEFAULT 0"],
       ])
         if (!columns.has(name))
           this.db.exec(`ALTER TABLE sites ADD COLUMN ${name} ${type}`);
+      this.db.exec(
+        "UPDATE sites SET sync_revision=revision WHERE sync_revision IS NULL",
+      );
     });
     this.db
       .prepare("INSERT OR IGNORE INTO settings VALUES(?,?)")
@@ -160,7 +167,7 @@ export class Store {
   importData(input, mode = "merge") {
     if (!["merge", "replace"].includes(mode))
       throw new HttpError(400, "Import mode must be merge or replace");
-    const data = validateBackup(input);
+    const data = isValidatedBackup(input) ? input : validateBackup(input);
     return this.transaction(() => {
       const current = this.db.prepare("SELECT * FROM sites").all(),
         byId = new Map(current.map((row) => [row.id, row])),
@@ -172,18 +179,33 @@ export class Store {
         mapping = new Map(),
         imported = data.sites.map((entry) => {
           const old =
-              byId.get(entry.id) ?? byIdentity.get(siteIdentity(entry.config)),
-            id = old?.id ?? entry.id;
+            byId.get(entry.id) ?? byIdentity.get(siteIdentity(entry.config));
+          const originalId = old?.id ?? entry.id;
+          const outstanding =
+            this.db
+              .prepare(
+                "SELECT MAX(revision) AS revision FROM jobs WHERE site_id=?",
+              )
+              .get(originalId).revision ?? 0;
+          const rotate =
+            Math.max(
+              old?.revision ?? 0,
+              old?.sync_revision ?? 0,
+              outstanding,
+            ) >=
+              Number.MAX_SAFE_INTEGER - 1 ||
+            (!old && entry.revision >= 1e12);
+          const id = rotate ? randomUUID() : originalId;
           if ([...mapping.values()].includes(id))
             throw new HttpError(
               409,
               "Multiple imported sites match the same site",
             );
           mapping.set(entry.id, id);
-          return { ...entry, id, old };
+          return { ...entry, id, old, rotate, originalId };
         }),
         retained = current.filter(
-          (row) => ![...mapping.values()].includes(row.id),
+          (row) => !imported.some((entry) => entry.old?.id === row.id),
         );
       if (imported.length + (mode === "merge" ? retained.length : 0) > 200)
         throw new HttpError(400, "Maximum 200 sites");
@@ -210,7 +232,10 @@ export class Store {
       if (mode === "replace") {
         for (const row of retained) {
           this.retireJobs(row.id);
-          this.enqueue({ ...row, revision: row.revision + 1 }, "delete");
+          this.enqueue(
+            { ...row, sync_revision: (row.sync_revision ?? row.revision) + 1 },
+            "delete",
+          );
           this.db.prepare("DELETE FROM sites WHERE id=?").run(row.id);
         }
       }
@@ -221,10 +246,34 @@ export class Store {
                 "SELECT MAX(revision) AS revision FROM jobs WHERE site_id=?",
               )
               .get(entry.id).revision ?? 0,
-          revision =
-            Math.max(entry.revision, entry.old?.revision ?? 0, outstanding) + 1;
+          revision = entry.rotate
+            ? 1
+            : Math.max(
+                entry.revision < 1e12 ? entry.revision : 0,
+                entry.old?.revision ?? 0,
+                entry.old?.sync_revision ?? 0,
+                outstanding,
+              ) + 1;
         if (!Number.isSafeInteger(revision))
           throw new HttpError(400, "Site revision is too large");
+        if (entry.rotate) {
+          this.retireJobs(entry.originalId);
+          this.enqueue(
+            {
+              id: entry.originalId,
+              revision: Number.MAX_SAFE_INTEGER,
+              sync_revision: Number.MAX_SAFE_INTEGER,
+              config: JSON.stringify(
+                entry.old ? JSON.parse(entry.old.config) : entry.config,
+              ),
+            },
+            "delete",
+          );
+          if (entry.old)
+            this.db
+              .prepare("DELETE FROM sites WHERE id=?")
+              .run(entry.originalId);
+        }
         const cleanup =
           entry.config.type === "others" &&
           ((entry.old && JSON.parse(entry.old.config).type !== "others") ||
@@ -246,8 +295,8 @@ export class Store {
             .run(entry.id);
         this.db
           .prepare(
-            `INSERT INTO sites(id,revision,config,snapshot,fetched_at,last_checked,error,warnings,next_sync,favicon,favicon_blob,favicon_type)
-             VALUES(?,?,?,?,?,?,?,?,?,?,?,?) ON CONFLICT(id) DO UPDATE SET revision=excluded.revision,
+            `INSERT INTO sites(id,revision,sync_revision,icon_revision,config,snapshot,fetched_at,last_checked,error,warnings,next_sync,favicon,favicon_blob,favicon_type)
+             VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?) ON CONFLICT(id) DO UPDATE SET revision=excluded.revision,sync_revision=excluded.sync_revision,icon_revision=excluded.icon_revision,
              config=excluded.config,snapshot=excluded.snapshot,fetched_at=excluded.fetched_at,
              last_checked=excluded.last_checked,error=excluded.error,warnings=excluded.warnings,next_sync=excluded.next_sync,
              favicon=excluded.favicon,favicon_blob=excluded.favicon_blob,favicon_type=excluded.favicon_type`,
@@ -255,6 +304,8 @@ export class Store {
           .run(
             entry.id,
             revision,
+            revision,
+            (entry.old?.icon_revision ?? 0) + 1,
             JSON.stringify(entry.config),
             entry.snapshot ? JSON.stringify(entry.snapshot) : null,
             entry.fetched_at,
@@ -345,7 +396,7 @@ export class Store {
     return Boolean(
       this.db
         .prepare(
-          "UPDATE sites SET favicon=?,favicon_blob=?,favicon_type=? WHERE id=? AND revision=? AND favicon IS ?",
+          "UPDATE sites SET favicon=?,favicon_blob=?,favicon_type=?,icon_revision=icon_revision+1 WHERE id=? AND revision=? AND favicon IS ?",
         )
         .run(
           JSON.stringify(state),
@@ -357,14 +408,14 @@ export class Store {
         ).changes,
     );
   }
-  enqueue(row, operation = "sync") {
+  enqueue(row, operation = "sync", refreshModels = false) {
     const config = JSON.parse(row.config);
     const jobId = randomUUID(),
       now = Date.now();
     const payload = {
       job_id: jobId,
       site_id: row.id,
-      config_revision: row.revision,
+      config_revision: row.sync_revision ?? row.revision,
       operation,
       name: config.name,
       url: config.url,
@@ -373,12 +424,20 @@ export class Store {
       password: config.password,
       access_token: config.access_token ?? "",
       user_id: config.user_id ?? 0,
+      ...(refreshModels ? { refresh_models: true } : {}),
     };
     this.db
       .prepare(
         "INSERT INTO jobs(id,site_id,revision,payload,state,due,created_at) VALUES(?,?,?,?,'pending',?,?)",
       )
-      .run(jobId, row.id, row.revision, JSON.stringify(payload), now, now);
+      .run(
+        jobId,
+        row.id,
+        payload.config_revision,
+        JSON.stringify(payload),
+        now,
+        now,
+      );
     this.db
       .prepare("UPDATE sites SET next_sync=? WHERE id=?")
       .run(now + this.interval * 1000, row.id);
@@ -388,6 +447,15 @@ export class Store {
     return this.transaction(() => {
       const old = id ? this.row(id) : null;
       if (id && !old) throw new HttpError(404, "Site not found");
+      if (
+        old &&
+        Object.hasOwn(input ?? {}, "revision") &&
+        input.revision !== old.revision
+      )
+        throw new HttpError(
+          409,
+          "Site changed since it was opened; load the latest version before saving",
+        );
       const previous = old && JSON.parse(old.config),
         config = validateSite(input, previous);
       const cleanupNeeded =
@@ -426,29 +494,57 @@ export class Store {
       const revision = (old?.revision ?? 0) + 1;
       const identityChanged =
         previous &&
-        ["url", "type", "account", "password", "access_token", "user_id"].some(
+        [
+          "url",
+          "type",
+          "account",
+          "password",
+          "access_token",
+          "user_id",
+          "auth_mode",
+        ].some(
           (k) => (previous[k] ?? (k === "user_id" ? 0 : "")) !== config[k],
+        );
+      const syncChanged =
+        !old || identityChanged || previous.enabled !== config.enabled;
+      const syncRevision = old
+        ? (old.sync_revision ?? old.revision) + (syncChanged ? 1 : 0)
+        : 1;
+      if (
+        !Number.isSafeInteger(revision) ||
+        !Number.isSafeInteger(syncRevision)
+      )
+        throw new HttpError(
+          409,
+          "Site revision exhausted; export and reimport this site with a new ID",
         );
       this.db
         .prepare(
-          `INSERT INTO sites(id,revision,config,next_sync) VALUES(?,?,?,?) ON CONFLICT(id) DO UPDATE SET
-        revision=excluded.revision,config=excluded.config,next_sync=excluded.next_sync`,
+          `INSERT INTO sites(id,revision,sync_revision,config,next_sync) VALUES(?,?,?,?,?) ON CONFLICT(id) DO UPDATE SET
+        revision=excluded.revision,sync_revision=excluded.sync_revision,config=excluded.config,next_sync=excluded.next_sync`,
         )
-        .run(id, revision, JSON.stringify(config), Date.now());
+        .run(
+          id,
+          revision,
+          syncRevision,
+          JSON.stringify(config),
+          syncChanged ? Date.now() : old.next_sync,
+        );
       if (
         previous &&
         ["url", "icon"].some((key) => (previous[key] ?? "") !== config[key])
       )
         this.db
           .prepare(
-            "UPDATE sites SET favicon=NULL,favicon_blob=NULL,favicon_type=NULL WHERE id=?",
+            "UPDATE sites SET favicon=NULL,favicon_blob=NULL,favicon_type=NULL,icon_revision=icon_revision+1 WHERE id=?",
           )
           .run(id);
-      this.db
-        .prepare(
-          "UPDATE jobs SET state='superseded',payload='{}' WHERE site_id=? AND state IN ('pending','running')",
-        )
-        .run(id);
+      if (syncChanged)
+        this.db
+          .prepare(
+            "UPDATE jobs SET state='superseded',payload='{}' WHERE site_id=? AND state IN ('pending','running')",
+          )
+          .run(id);
       if (identityChanged)
         this.db
           .prepare(
@@ -477,7 +573,7 @@ export class Store {
             id,
           );
         if (cleanupNeeded) this.enqueue(row, "delete");
-      } else if (config.enabled) this.enqueue(row);
+      } else if (config.enabled && syncChanged) this.enqueue(row);
       return id;
     });
   }
@@ -490,7 +586,16 @@ export class Store {
           "UPDATE jobs SET state='superseded',payload='{}' WHERE site_id=? AND state IN ('pending','running')",
         )
         .run(id);
-      this.enqueue({ ...row, revision: row.revision + 1 }, "delete");
+      this.enqueue(
+        {
+          ...row,
+          sync_revision: Math.min(
+            Number.MAX_SAFE_INTEGER,
+            (row.sync_revision ?? row.revision) + 1,
+          ),
+        },
+        "delete",
+      );
       this.db.prepare("DELETE FROM sites WHERE id=?").run(id);
     });
   }
@@ -499,11 +604,17 @@ export class Store {
     if (!row) throw new HttpError(404, "Site not found");
     if (JSON.parse(row.config).type === "others")
       throw new HttpError(400, "Manual sites do not use a provider");
+    if (manual)
+      this.db
+        .prepare(
+          "UPDATE jobs SET state='superseded' WHERE site_id=? AND revision=? AND state='failed'",
+        )
+        .run(id, row.sync_revision ?? row.revision);
     const job = this.db
       .prepare(
         "SELECT id,state FROM jobs WHERE site_id=? AND revision=? AND state IN ('pending','running')",
       )
-      .get(id, row.revision);
+      .get(id, row.sync_revision ?? row.revision);
     if (job) {
       // Redelivery must reuse the same job ID so a saved Go result cannot rotate
       // tokens again. A manual retry only shortens the pending job's backoff.
@@ -517,12 +628,43 @@ export class Store {
     }
     this.enqueue(row);
   }
+  refreshModels(id) {
+    return this.transaction(() => {
+      const row = this.row(id);
+      if (!row) throw new HttpError(404, "Site not found");
+      const config = JSON.parse(row.config);
+      if (config.type === "others" || !config.enabled)
+        throw new HttpError(
+          400,
+          "Model discovery requires an enabled provider site",
+        );
+      const active = this.db
+        .prepare(
+          "SELECT id,state,payload FROM jobs WHERE site_id=? AND state IN ('pending','running') ORDER BY created_at DESC LIMIT 1",
+        )
+        .get(id);
+      if (active) {
+        if (JSON.parse(active.payload).refresh_models === true)
+          return active.id;
+        throw new HttpError(
+          409,
+          "Wait for the current sync to finish before refreshing model discovery",
+        );
+      }
+      return this.enqueue(row, "sync", true);
+    });
+  }
   schedule() {
     for (const row of this.db
       .prepare("SELECT * FROM sites WHERE next_sync<=?")
       .all(Date.now())) {
       const c = JSON.parse(row.config);
-      if (c.enabled && c.type !== "others") this.queue(row.id);
+      const failed = this.db
+        .prepare(
+          "SELECT id FROM jobs WHERE site_id=? AND revision=? AND state='failed' LIMIT 1",
+        )
+        .get(row.id, row.sync_revision ?? row.revision);
+      if (c.enabled && c.type !== "others" && !failed) this.queue(row.id);
     }
     this.db
       .prepare(
@@ -536,7 +678,7 @@ export class Store {
   nextJob() {
     const job = this.db
       .prepare(
-        "SELECT * FROM jobs WHERE state='pending' AND due<=? ORDER BY created_at LIMIT 1",
+        "SELECT j.* FROM jobs j WHERE j.state='pending' AND j.due<=? AND NOT EXISTS(SELECT 1 FROM jobs active WHERE active.site_id=j.site_id AND active.state='running') ORDER BY j.created_at,j.rowid LIMIT 1",
       )
       .get(Date.now());
     if (job)
@@ -558,7 +700,20 @@ export class Store {
         job.id,
       );
   }
+  reject(job, message) {
+    this.db
+      .prepare(
+        "UPDATE jobs SET state='failed',payload='{}',error=? WHERE id=? AND state='running'",
+      )
+      .run(message, job.id);
+    this.db
+      .prepare(
+        "UPDATE sites SET error=? WHERE id=? AND COALESCE(sync_revision,revision)=?",
+      )
+      .run(message, job.site_id, job.revision);
+  }
   accept(result) {
+    syncResult(result);
     return this.transaction(() => {
       const job = this.db
         .prepare("SELECT * FROM jobs WHERE id=?")
@@ -574,7 +729,7 @@ export class Store {
         row = this.row(job.site_id);
       if (
         row &&
-        row.revision === job.revision &&
+        (row.sync_revision ?? row.revision) === job.revision &&
         payload.operation === "sync"
       ) {
         if (result.url !== payload.url || result.type !== payload.type)
@@ -680,6 +835,49 @@ export class Store {
         };
       });
   }
+  getChangesPage({ limit = 50, offset = 0, q = "" } = {}) {
+    if (
+      !Number.isSafeInteger(limit) ||
+      limit < 1 ||
+      limit > 200 ||
+      !Number.isSafeInteger(offset) ||
+      offset < 0 ||
+      offset > 2000 ||
+      typeof q !== "string" ||
+      q.length > 200
+    )
+      throw new HttpError(400, "Invalid history pagination or search");
+    const query = q.trim().toLowerCase();
+    const condition =
+      "FROM catalog_changes c JOIN sites s ON c.site_id=s.id WHERE (?='' OR instr(lower(json_extract(s.config,'$.name') || char(10) || c.details),?)>0)";
+    const total = this.db
+      .prepare(`SELECT COUNT(*) AS total ${condition}`)
+      .get(query, query).total;
+    const rows = this.db
+      .prepare(
+        `SELECT c.*,s.config ${condition} ORDER BY c.checked_at DESC,c.rowid DESC LIMIT ? OFFSET ?`,
+      )
+      .all(query, query, limit, offset);
+    return {
+      changes: rows.map((row) => {
+        const config = JSON.parse(row.config);
+        return {
+          id: row.id,
+          site_id: row.site_id,
+          site_name: config.name,
+          checked_at: row.checked_at,
+          previous_checked_at: row.previous_checked_at,
+          details: JSON.parse(row.details),
+          dismissed: Boolean(row.dismissed),
+          enabled: config.enabled,
+          monitor_changes: config.monitor_changes !== false,
+        };
+      }),
+      total,
+      offset,
+      limit,
+    };
+  }
   changeVisibility(id, visible) {
     if (typeof visible !== "boolean")
       throw new HttpError(400, "Visibility must be a boolean");
@@ -693,10 +891,10 @@ export class Store {
       now = Date.now();
     return this.db
       .prepare(
-        `SELECT s.id,s.revision,s.config,s.snapshot,s.fetched_at,s.last_checked,s.error,s.warnings,
+        `SELECT s.id,s.revision,s.sync_revision,s.icon_revision,s.config,s.snapshot,s.fetched_at,s.last_checked,s.error,s.warnings,
          j.state AS job_state,j.attempts AS job_attempts,j.error AS job_error
          FROM sites s LEFT JOIN jobs j ON j.id=(
-           SELECT id FROM jobs WHERE site_id=s.id AND revision=s.revision AND state IN ('pending','running')
+           SELECT id FROM jobs WHERE site_id=s.id AND revision=COALESCE(s.sync_revision,s.revision) AND state IN ('pending','running')
            ORDER BY created_at DESC,rowid DESC LIMIT 1)
          ORDER BY s.rowid`,
       )
@@ -726,6 +924,7 @@ export class Store {
           {
             ...metadata,
             id: row.id,
+            icon_revision: row.icon_revision,
             fetched_at: row.fetched_at,
             last_checked: row.last_checked,
             catalog: row.snapshot ? JSON.parse(row.snapshot) : null,

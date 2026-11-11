@@ -55,7 +55,13 @@ test("directory reads keep SQLite query counts constant at the 200-site limit", 
     assert.ok(queries.length <= 2, `executed ${queries.length} queries`);
     if (!admin) {
       const json = JSON.stringify(sites);
-      for (const secret of [config.account, config.password, "job", "revision"])
+      for (const secret of [
+        config.account,
+        config.password,
+        "job",
+        '"revision":',
+        '"sync_revision":',
+      ])
         assert.ok(!json.includes(secret), `public response leaked ${secret}`);
     }
   }
@@ -139,7 +145,7 @@ test("directory reads preserve ordering, visibility, job selection and status pr
   store.db
     .prepare("UPDATE jobs SET attempts=2,error='Newest active job' WHERE id=?")
     .run(active.at(-1).id);
-  store.enqueue({ ...row, revision: row.revision + 1 });
+  store.enqueue({ ...row, sync_revision: row.sync_revision + 1 });
   store.enqueue(row);
   store.db
     .prepare(

@@ -55,7 +55,22 @@ export function url(value, optional = false) {
     u.search
   )
     fail("Use an http(s) URL without credentials, query or fragment");
-  return u.href.replace(/\/$/, "");
+  return u.href.replace(/\/+$/, "");
+}
+export function syncResult(input) {
+  if (!input || typeof input !== "object" || Array.isArray(input))
+    fail("Invalid sync result");
+  for (const key of ["job_id", "site_id"])
+    if (
+      typeof input[key] !== "string" ||
+      !/^[\da-f]{8}-[\da-f]{4}-[\da-f]{4}-[\da-f]{4}-[\da-f]{12}$/i.test(
+        input[key],
+      )
+    )
+      fail(`Invalid sync result ${key}`);
+  if (!Number.isSafeInteger(input.config_revision) || input.config_revision < 1)
+    fail("Invalid sync result config_revision");
+  return input;
 }
 export function favicon(input, siteURL) {
   if (input == null) return null;
