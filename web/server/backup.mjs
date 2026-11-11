@@ -143,7 +143,7 @@ export function validateBackup(input) {
       typeof entry.dismissed !== "boolean" ||
       !Array.isArray(entry.details) ||
       !entry.details.length ||
-      entry.details.length > 1000
+      entry.details.length > 2000
     )
       fail("Invalid backup change details");
     const checkedAt = timestamp(entry.checked_at, false),

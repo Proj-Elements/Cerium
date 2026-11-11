@@ -16,6 +16,7 @@ import {
   validateBackup,
 } from "../server/backup.mjs";
 import { ICON_LIMIT } from "../server/icon-content.mjs";
+import { compareCatalogs } from "../server/changes.mjs";
 
 const manual = {
   name: "Backup worker",
@@ -54,6 +55,53 @@ function saveIcon(store, id, image) {
     { body: image, type: "image/svg+xml" },
   );
 }
+
+test("maximum-size catalogs retain every multiplier model and price event in backups and recovery", async (t) => {
+  const { store } = fixture(t),
+    id = store.save(manual);
+  const makeCatalog = (after) => ({
+    scope: "public",
+    groups: Array.from({ length: 500 }, (_, index) => ({
+      id: `group-${index}`,
+      name: `Group ${index}`,
+      multiplier: after ? 2 : 1,
+      models_known: true,
+      models: [after ? "new-model" : "old-model"],
+      prices: [
+        {
+          model: "priced-model",
+          mode: "tokens",
+          input: after ? 2 : 1,
+          output: 3,
+        },
+      ],
+    })),
+  });
+  const details = compareCatalogs(makeCatalog(false), makeCatalog(true));
+  assert.equal(details.length, 1500);
+  store.db
+    .prepare(
+      "INSERT INTO catalog_changes(id,site_id,checked_at,details) VALUES(?,?,?,?)",
+    )
+    .run(
+      "10000000-0000-4000-8000-000000000001",
+      id,
+      new Date().toISOString(),
+      JSON.stringify(details),
+    );
+  for (const format of ["json", "sqlite"]) {
+    const parsed = await parseBackupAsync(
+      await serializeBackup(store, format),
+      format,
+    );
+    assert.equal(parsed.changes[0].details.length, 1500);
+    assert.equal(parsed.changes[0].details[2].price_changes[0].after.input, 2);
+  }
+  const recovered = await parseRecoveryDatabase(
+    await exportRecoveryDatabase(store),
+  );
+  assert.equal(JSON.parse(recovered.changes[0].details).length, 1500);
+});
 
 test("backup workers read committed WAL data without touching request-thread exportData", async (t) => {
   const { store } = fixture(t),
