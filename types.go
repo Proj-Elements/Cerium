@@ -97,6 +97,8 @@ type Result struct {
 	Catalog        *Catalog  `json:"catalog,omitempty"`
 	Warnings       []string  `json:"warnings,omitempty"`
 	Error          string    `json:"error,omitempty"`
+	ErrorStage     string    `json:"error_stage,omitempty"`
+	ErrorCategory  string    `json:"error_category,omitempty"`
 	SiteID         string    `json:"site_id,omitempty"`
 	JobID          string    `json:"job_id,omitempty"`
 	ConfigRevision int64     `json:"config_revision,omitempty"`
