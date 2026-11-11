@@ -3,7 +3,10 @@ package cerium
 import (
 	"context"
 	"errors"
+	"net/http"
+	"net/http/httptest"
 	"reflect"
+	"strings"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -145,5 +148,90 @@ func TestBaseURLCanonicalizesEveryTrailingSlash(t *testing.T) {
 		if err != nil || base.String() != "https://example.invalid/prefix" {
 			t.Fatalf("URL canonicalization mismatch for %q: url=%v error=%v", suffix, base, err)
 		}
+	}
+}
+
+func TestBaseURLPreservesEscapedPathSegments(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(writer http.ResponseWriter, request *http.Request) {
+		if request.URL.EscapedPath() != "/prefix%2F/api/check" {
+			t.Errorf("escaped site prefix changed the upstream endpoint: %s", request.URL.EscapedPath())
+		}
+		reply(writer, `{"code":0,"data":{}}`)
+	}))
+	defer server.Close()
+	for _, suffix := range []string{"", "/", "//"} {
+		client, err := newAPIClient(server.URL+"/prefix%2F"+suffix, time.Second)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if client.base.String() != server.URL+"/prefix%2F" {
+			t.Fatal("escaped slash was treated as a removable path separator")
+		}
+		if _, err := client.request(context.Background(), &Session{}, http.MethodGet, "/api/check", nil); err != nil {
+			t.Fatal(err)
+		}
+	}
+}
+
+func TestSyncerRejectsCatalogOutsideSharedContract(t *testing.T) {
+	for _, test := range []struct {
+		name   string
+		change func(*Catalog)
+	}{
+		{"description", func(catalog *Catalog) { catalog.Groups[0].Description = strings.Repeat("x", 2001) }},
+		{"utf16 description", func(catalog *Catalog) { catalog.Groups[0].Description = strings.Repeat("😀", 1001) }},
+		{"group name", func(catalog *Catalog) { catalog.Groups[0].Name = strings.Repeat("x", 201) }},
+		{"platform", func(catalog *Catalog) { catalog.Groups[0].Platform = strings.Repeat("x", 101) }},
+		{"model id", func(catalog *Catalog) { catalog.Groups[0].Models = []string{strings.Repeat("x", 301)} }},
+		{"price expression", func(catalog *Catalog) {
+			catalog.Groups[0].Prices = []ModelPrice{{Model: "model", Mode: "dynamic", Expression: strings.Repeat("x", 16001)}}
+		}},
+		{"multiplier", func(catalog *Catalog) {
+			multiplier := 1e12 + 1
+			catalog.Groups[0].Multiplier = &multiplier
+		}},
+		{"groups", func(catalog *Catalog) {
+			catalog.Groups = make([]Group, 501)
+			for index := range catalog.Groups {
+				catalog.Groups[index] = Group{ID: string(rune(index + 1000)), Name: "group"}
+			}
+		}},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			store := testStore(t)
+			importCredentials(t, store, testCredential())
+			invalid := true
+			provider := &stubProvider{fetch: func(context.Context, *Session) (Catalog, error) {
+				catalog := Catalog{Scope: "public", Groups: []Group{{ID: "group", Name: "group"}}}
+				if invalid {
+					test.change(&catalog)
+				}
+				return catalog, nil
+			}}
+			results, err := (&Syncer{Store: store, Providers: registryFor(provider)}).Run(context.Background())
+			if err == nil || len(results) != 1 || results[0].Catalog != nil || results[0].ErrorStage != "validate_catalog" {
+				t.Fatalf("invalid upstream catalog became a successful saved callback: result=%+v error=%v", results, err)
+			}
+			sites, err := store.Sites(context.Background())
+			if err != nil || sites[0].Snapshot != nil || sites[0].LastRun.ErrorStage != "validate_catalog" {
+				t.Fatalf("invalid catalog was persisted as success: %v", err)
+			}
+			invalid = false
+			results, err = (&Syncer{Store: store, Providers: registryFor(provider)}).Run(context.Background())
+			if err != nil || len(results) != 1 || results[0].Catalog == nil || results[0].ErrorStage != "" {
+				t.Fatalf("corrected upstream catalog did not recover on a new attempt: result=%+v error=%v", results, err)
+			}
+		})
+	}
+}
+
+func TestNormalizeCatalogRetainsBoundaryData(t *testing.T) {
+	catalog := Catalog{Scope: "public", Groups: []Group{{ID: " group ", Name: " group ", Description: strings.Repeat("😀", 1000), Models: []string{" model ", "model", ""}}}}
+	if err := normalizeCatalog(&catalog); err != nil || catalog.Groups[0].ID != "group" || len(catalog.Groups[0].Models) != 1 || catalog.Groups[0].Models[0] != "model" {
+		t.Fatalf("boundary catalog was not normalized safely: %v", err)
+	}
+	catalog.Groups = append(catalog.Groups, Group{ID: "group", Name: "duplicate"})
+	if err := normalizeCatalog(&catalog); err == nil {
+		t.Fatal("identities that collide after Node text normalization were accepted")
 	}
 }

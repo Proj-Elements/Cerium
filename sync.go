@@ -13,6 +13,8 @@ import (
 	"sync"
 	"syscall"
 	"time"
+
+	"cerium/contracts"
 )
 
 type Syncer struct {
@@ -275,6 +277,7 @@ func normalizeCatalog(c *Catalog) error {
 	ids := make(map[string]bool, len(c.Groups))
 	for i := range c.Groups {
 		g := &c.Groups[i]
+		g.ID, g.Name = strings.TrimSpace(g.ID), strings.TrimSpace(g.Name)
 		if g.ID == "" || g.Name == "" || ids[g.ID] {
 			return errors.New("API returned empty or duplicate group identities")
 		}
@@ -284,10 +287,13 @@ func normalizeCatalog(c *Catalog) error {
 				return errors.New("API returned an invalid negative or nonfinite group multiplier")
 			}
 		}
+		for index := range g.Models {
+			g.Models[index] = strings.TrimSpace(g.Models[index])
+		}
 		g.Models = slices.DeleteFunc(g.Models, func(name string) bool { return name == "" })
 		slices.Sort(g.Models)
 		g.Models = slices.Compact(g.Models)
-		if g.ModelsKnown && g.Models == nil {
+		if g.Models == nil {
 			g.Models = []string{}
 		}
 	}
@@ -297,5 +303,8 @@ func normalizeCatalog(c *Catalog) error {
 		}
 		return strings.Compare(a.ID, b.ID)
 	})
+	if err := contracts.ValidateCatalog(c); err != nil {
+		return fmt.Errorf("API catalog exceeds the shared data contract: %w", err)
+	}
 	return nil
 }
