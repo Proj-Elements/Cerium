@@ -24,6 +24,8 @@ export type Group = {
 export type Catalog = { scope: string; groups: Group[] };
 export type Site = {
   id: string;
+  revision: number;
+  icon_revision?: number;
   name: string;
   url: string;
   type: "newapi" | "sub2api" | "others";
@@ -50,13 +52,26 @@ export type Site = {
   manual_catalog?: Catalog | null;
 };
 export type GroupChange = {
-  kind: "added" | "removed" | "multiplier";
+  kind: "added" | "removed" | "multiplier" | "models" | "prices";
   group_id: string;
   name: string;
   before: number | null;
   after: number | null;
   before_dynamic: boolean;
   after_dynamic: boolean;
+  models_added?: string[];
+  models_removed?: string[];
+  price_changes?: {
+    model: string;
+    before: Price | null;
+    after: Price | null;
+  }[];
+};
+export type ChangePage = {
+  changes: ChangeNotice[];
+  total: number;
+  offset: number;
+  limit: number;
 };
 export type ChangeNotice = {
   id: string;
