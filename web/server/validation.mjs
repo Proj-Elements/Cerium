@@ -41,36 +41,24 @@ export function number(value, nullable = true) {
 }
 export function url(value, optional = false) {
   if (optional && !value) return "";
-  let u;
   try {
-    u = new URL(text(value, 2048, true));
-  } catch {
-    fail("Invalid URL");
+    return canonicalSiteURL(value);
+  } catch (error) {
+    if (error instanceof ContractError)
+      fail("Use an http(s) URL without credentials, query or fragment");
+    throw error;
   }
-  if (
-    !["http:", "https:"].includes(u.protocol) ||
-    u.username ||
-    u.password ||
-    u.hash ||
-    u.search
-  )
-    fail("Use an http(s) URL without credentials, query or fragment");
-  return u.href.replace(/\/+$/, "");
 }
-export function syncResult(input) {
-  if (!input || typeof input !== "object" || Array.isArray(input))
-    fail("Invalid sync result");
-  for (const key of ["job_id", "site_id"])
-    if (
-      typeof input[key] !== "string" ||
-      !/^[\da-f]{8}-[\da-f]{4}-[\da-f]{4}-[\da-f]{4}-[\da-f]{12}$/i.test(
-        input[key],
-      )
-    )
-      fail(`Invalid sync result ${key}`);
-  if (!Number.isSafeInteger(input.config_revision) || input.config_revision < 1)
-    fail("Invalid sync result config_revision");
-  return input;
+export function syncResult(input, complete = false) {
+  try {
+    return assertWireContract(
+      complete ? "BridgeResult" : "BridgeIdentity",
+      input,
+    );
+  } catch (error) {
+    if (error instanceof ContractError) fail(error.message);
+    throw error;
+  }
 }
 export function favicon(input, siteURL) {
   if (input == null) return null;
@@ -131,7 +119,7 @@ export function catalog(input, scope = "public") {
   )
     fail("Expected an explicitly public catalog");
   const ids = new Set();
-  return {
+  const normalized = {
     scope,
     groups: input.groups.map((g) => {
       if (!g || typeof g !== "object" || Array.isArray(g))
@@ -183,6 +171,13 @@ export function catalog(input, scope = "public") {
       };
     }),
   };
+  try {
+    assertWireContract("Catalog", normalized);
+  } catch (error) {
+    if (error instanceof ContractError) fail(error.message);
+    throw error;
+  }
+  return normalized;
 }
 export function site(input, previous) {
   if (!input || typeof input !== "object" || Array.isArray(input))
@@ -280,3 +275,8 @@ export function site(input, previous) {
         : null,
   };
 }
+import {
+  assertWireContract,
+  canonicalSiteURL,
+  ContractError,
+} from "./contracts.generated.mjs";
