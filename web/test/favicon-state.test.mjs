@@ -69,13 +69,21 @@ function complete(store, id, extra = {}) {
   const value = {
     job_id: job.id,
     site_id: id,
-    config_revision: row.revision,
+    config_revision: job.revision,
     url: JSON.parse(row.config).url,
     type: JSON.parse(row.config).type,
     checked_at: new Date().toISOString(),
     catalog: {
       scope: "public",
-      groups: [{ id: "g", name: "Group", multiplier: 1 }],
+      groups: [
+        {
+          id: "g",
+          name: "Group",
+          multiplier: 1,
+          models: [],
+          models_known: false,
+        },
+      ],
     },
     ...extra,
   };

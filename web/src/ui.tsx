@@ -39,6 +39,7 @@ import chartLine from "@iconify-icons/gravity-ui/chart-line";
 import pencil from "@iconify-icons/gravity-ui/pencil";
 import trashBin from "@iconify-icons/gravity-ui/trash-bin";
 import { isThemePreference, useThemePreference } from "./theme";
+import { formatNumber } from "./number-format";
 
 const icons = {
   sun,
@@ -287,12 +288,7 @@ export function Empty({
     </EmptyState>
   );
 }
-export const n = (value: number | null | undefined) =>
-  value == null
-    ? "—"
-    : new Intl.NumberFormat("en-US", { maximumFractionDigits: 6 }).format(
-        value,
-      );
+export const n = formatNumber;
 export function when(value: string | null) {
   if (!value) return "尚未同步";
   const minutes = Math.max(

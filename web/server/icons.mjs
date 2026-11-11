@@ -307,18 +307,30 @@ export function createPersistentIconResolver(
 ) {
   const pending = new Map();
   const result = (id, row) => ({
-    icons: row.favicon_blob ? [`/api/sites/${id}/icon/image`] : [],
+    icons:
+      row.favicon_type &&
+      iconType(Buffer.from(row.favicon_blob ?? []), row.favicon_type) ===
+        row.favicon_type
+        ? [`/api/sites/${id}/icon/image`]
+        : [],
   });
   return async (id) => {
     for (let attempt = 0; attempt < 3; attempt++) {
       const row = store.row(id),
         config = row && JSON.parse(row.config);
       if (!config?.enabled) throw new HttpError(404, "Site not found");
-      const previous = row.favicon === null ? null : JSON.parse(row.favicon);
+      const previous = row.favicon === null ? null : JSON.parse(row.favicon),
+        validImage =
+          row.favicon_blob &&
+          row.favicon_type &&
+          iconType(Buffer.from(row.favicon_blob), row.favicon_type) ===
+            row.favicon_type,
+        corruptImage = row.favicon_blob && !validImage;
       if (
         previous &&
-        ((previous.selected && row.favicon_blob && row.favicon_type) ||
-          Date.now() - Date.parse(previous.checked_at) < 15 * 60000)
+        ((previous.selected && validImage) ||
+          (!corruptImage &&
+            Date.now() - Date.parse(previous.checked_at) < 15 * 60000))
       )
         return result(id, row);
       const key = `${id}:${row.revision}`;

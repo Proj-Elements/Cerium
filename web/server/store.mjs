@@ -10,13 +10,27 @@ import {
   syncInterval,
   paymentPresets,
   DEFAULT_PAYMENT_PRESETS,
+  syncResult,
 } from "./validation.mjs";
-import { compareCatalogs } from "./changes.mjs";
-import { validateBackup, siteIdentity } from "./backup.mjs";
+import {
+  exportData,
+  importData,
+  recoverRevisionBoundaries,
+  recoverLegacyURLs,
+  sites,
+} from "./store-data.mjs";
+import {
+  recordChanges,
+  changes,
+  getChangesPage,
+  changeVisibility,
+} from "./store-history.mjs";
 import { iconType } from "./icon-content.mjs";
+import { siteIdentity } from "./backup.mjs";
 
 export class Store {
   constructor(path, interval = 900) {
+    this.path = path;
     mkdirSync(dirname(path), { recursive: true, mode: 0o700 });
     this.db = new DatabaseSync(path);
     chmodSync(path, 0o600);
@@ -46,9 +60,14 @@ export class Store {
         ["favicon", "TEXT"],
         ["favicon_blob", "BLOB"],
         ["favicon_type", "TEXT"],
+        ["sync_revision", "INTEGER"],
+        ["icon_revision", "INTEGER NOT NULL DEFAULT 0"],
       ])
         if (!columns.has(name))
           this.db.exec(`ALTER TABLE sites ADD COLUMN ${name} ${type}`);
+      this.db.exec(
+        "UPDATE sites SET sync_revision=revision WHERE sync_revision IS NULL",
+      );
     });
     this.db
       .prepare("INSERT OR IGNORE INTO settings VALUES(?,?)")
@@ -64,6 +83,8 @@ export class Store {
       .prepare("INSERT OR IGNORE INTO settings VALUES(?,?)")
       .run("payment_presets", JSON.stringify(DEFAULT_PAYMENT_PRESETS));
     this.db.exec("UPDATE jobs SET state='pending' WHERE state='running'");
+    recoverLegacyURLs.call(this);
+    recoverRevisionBoundaries.call(this);
   }
   get interval() {
     return Number(
@@ -118,191 +139,11 @@ export class Store {
       };
     });
   }
-  exportData() {
-    return {
-      format: "cerium-web-backup",
-      version: 1,
-      exported_at: new Date().toISOString(),
-      settings: {
-        sync_interval_seconds: this.interval,
-        payment_presets: this.paymentPresets,
-      },
-      sites: this.db
-        .prepare("SELECT * FROM sites ORDER BY rowid")
-        .all()
-        .map((row) => ({
-          id: row.id,
-          revision: row.revision,
-          config: JSON.parse(row.config),
-          snapshot: row.snapshot ? JSON.parse(row.snapshot) : null,
-          fetched_at: row.fetched_at,
-          last_checked: row.last_checked,
-          error: row.error,
-          warnings: JSON.parse(row.warnings || "[]"),
-          favicon: row.favicon == null ? null : JSON.parse(row.favicon),
-          favicon_cache: row.favicon_blob
-            ? {
-                type: row.favicon_type,
-                data: Buffer.from(row.favicon_blob).toString("base64"),
-              }
-            : null,
-        })),
-      changes: this.db
-        .prepare("SELECT * FROM catalog_changes ORDER BY checked_at,rowid")
-        .all()
-        .map((row) => ({
-          ...row,
-          details: JSON.parse(row.details),
-          dismissed: Boolean(row.dismissed),
-        })),
-    };
+  exportData(options) {
+    return exportData.call(this, options);
   }
   importData(input, mode = "merge") {
-    if (!["merge", "replace"].includes(mode))
-      throw new HttpError(400, "Import mode must be merge or replace");
-    const data = validateBackup(input);
-    return this.transaction(() => {
-      const current = this.db.prepare("SELECT * FROM sites").all(),
-        byId = new Map(current.map((row) => [row.id, row])),
-        byIdentity = new Map(
-          current
-            .filter((row) => siteIdentity(JSON.parse(row.config)) !== null)
-            .map((row) => [siteIdentity(JSON.parse(row.config)), row]),
-        ),
-        mapping = new Map(),
-        imported = data.sites.map((entry) => {
-          const old =
-              byId.get(entry.id) ?? byIdentity.get(siteIdentity(entry.config)),
-            id = old?.id ?? entry.id;
-          if ([...mapping.values()].includes(id))
-            throw new HttpError(
-              409,
-              "Multiple imported sites match the same site",
-            );
-          mapping.set(entry.id, id);
-          return { ...entry, id, old };
-        }),
-        retained = current.filter(
-          (row) => ![...mapping.values()].includes(row.id),
-        );
-      if (imported.length + (mode === "merge" ? retained.length : 0) > 200)
-        throw new HttpError(400, "Maximum 200 sites");
-      const identities = new Set();
-      for (const config of [
-        ...(mode === "merge"
-          ? retained.map((row) => JSON.parse(row.config))
-          : []),
-        ...imported.map((entry) => entry.config),
-      ]) {
-        const identity = siteIdentity(config);
-        if (identity !== null && identities.has(identity))
-          throw new HttpError(
-            409,
-            "This URL, provider and account or user ID already exist",
-          );
-        if (identity !== null) identities.add(identity);
-      }
-      this.writeInterval(data.settings.sync_interval_seconds);
-      if (data.settings.payment_presets !== undefined)
-        this.db
-          .prepare("UPDATE settings SET value=? WHERE key='payment_presets'")
-          .run(JSON.stringify(data.settings.payment_presets));
-      if (mode === "replace") {
-        for (const row of retained) {
-          this.retireJobs(row.id);
-          this.enqueue({ ...row, revision: row.revision + 1 }, "delete");
-          this.db.prepare("DELETE FROM sites WHERE id=?").run(row.id);
-        }
-      }
-      for (const entry of imported) {
-        const outstanding =
-            this.db
-              .prepare(
-                "SELECT MAX(revision) AS revision FROM jobs WHERE site_id=?",
-              )
-              .get(entry.id).revision ?? 0,
-          revision =
-            Math.max(entry.revision, entry.old?.revision ?? 0, outstanding) + 1;
-        if (!Number.isSafeInteger(revision))
-          throw new HttpError(400, "Site revision is too large");
-        const cleanup =
-          entry.config.type === "others" &&
-          ((entry.old && JSON.parse(entry.old.config).type !== "others") ||
-            this.db
-              .prepare(
-                "SELECT id FROM jobs WHERE site_id=? AND state IN ('pending','running') AND json_extract(payload,'$.operation')='delete'",
-              )
-              .get(entry.id));
-        this.retireJobs(entry.id);
-        if (
-          mode === "replace" ||
-          (entry.old &&
-            ["url", "type"].some(
-              (key) => JSON.parse(entry.old.config)[key] !== entry.config[key],
-            ))
-        )
-          this.db
-            .prepare("DELETE FROM catalog_changes WHERE site_id=?")
-            .run(entry.id);
-        this.db
-          .prepare(
-            `INSERT INTO sites(id,revision,config,snapshot,fetched_at,last_checked,error,warnings,next_sync,favicon,favicon_blob,favicon_type)
-             VALUES(?,?,?,?,?,?,?,?,?,?,?,?) ON CONFLICT(id) DO UPDATE SET revision=excluded.revision,
-             config=excluded.config,snapshot=excluded.snapshot,fetched_at=excluded.fetched_at,
-             last_checked=excluded.last_checked,error=excluded.error,warnings=excluded.warnings,next_sync=excluded.next_sync,
-             favicon=excluded.favicon,favicon_blob=excluded.favicon_blob,favicon_type=excluded.favicon_type`,
-          )
-          .run(
-            entry.id,
-            revision,
-            JSON.stringify(entry.config),
-            entry.snapshot ? JSON.stringify(entry.snapshot) : null,
-            entry.fetched_at,
-            entry.last_checked,
-            entry.error,
-            JSON.stringify(entry.warnings),
-            Date.now() + this.interval * 1000,
-            entry.favicon ? JSON.stringify(entry.favicon) : null,
-            entry.favicon_cache
-              ? Buffer.from(entry.favicon_cache.data, "base64")
-              : null,
-            entry.favicon_cache?.type ?? null,
-          );
-        if (cleanup) this.enqueue(this.row(entry.id), "delete");
-        else if (entry.config.enabled && entry.config.type !== "others")
-          this.enqueue(this.row(entry.id));
-      }
-      for (const change of data.changes) {
-        const siteId = mapping.get(change.site_id),
-          old = this.db
-            .prepare("SELECT site_id FROM catalog_changes WHERE id=?")
-            .get(change.id);
-        if (old && old.site_id !== siteId)
-          throw new HttpError(409, "Change record belongs to a different site");
-        this.db
-          .prepare(
-            `INSERT INTO catalog_changes(id,site_id,checked_at,previous_checked_at,details,dismissed)
-             VALUES(?,?,?,?,?,?) ON CONFLICT(id) DO UPDATE SET checked_at=excluded.checked_at,
-             previous_checked_at=excluded.previous_checked_at,details=excluded.details,dismissed=excluded.dismissed`,
-          )
-          .run(
-            change.id,
-            siteId,
-            change.checked_at,
-            change.previous_checked_at,
-            JSON.stringify(change.details),
-            change.dismissed ? 1 : 0,
-          );
-      }
-      this.db.exec(
-        "DELETE FROM catalog_changes WHERE id IN (SELECT id FROM catalog_changes ORDER BY checked_at DESC,rowid DESC LIMIT -1 OFFSET 2000)",
-      );
-      return {
-        imported: imported.length,
-        removed: mode === "replace" ? retained.length : 0,
-        interval: this.interval,
-      };
-    });
+    return importData.call(this, input, mode);
   }
   retireJobs(id) {
     this.db
@@ -345,7 +186,7 @@ export class Store {
     return Boolean(
       this.db
         .prepare(
-          "UPDATE sites SET favicon=?,favicon_blob=?,favicon_type=? WHERE id=? AND revision=? AND favicon IS ?",
+          "UPDATE sites SET favicon=?,favicon_blob=?,favicon_type=?,icon_revision=icon_revision+1 WHERE id=? AND revision=? AND favicon IS ?",
         )
         .run(
           JSON.stringify(state),
@@ -357,14 +198,14 @@ export class Store {
         ).changes,
     );
   }
-  enqueue(row, operation = "sync") {
+  enqueue(row, operation = "sync", refreshModels = false) {
     const config = JSON.parse(row.config);
     const jobId = randomUUID(),
       now = Date.now();
     const payload = {
       job_id: jobId,
       site_id: row.id,
-      config_revision: row.revision,
+      config_revision: row.sync_revision ?? row.revision,
       operation,
       name: config.name,
       url: config.url,
@@ -373,12 +214,20 @@ export class Store {
       password: config.password,
       access_token: config.access_token ?? "",
       user_id: config.user_id ?? 0,
+      ...(refreshModels ? { refresh_models: true } : {}),
     };
     this.db
       .prepare(
         "INSERT INTO jobs(id,site_id,revision,payload,state,due,created_at) VALUES(?,?,?,?,'pending',?,?)",
       )
-      .run(jobId, row.id, row.revision, JSON.stringify(payload), now, now);
+      .run(
+        jobId,
+        row.id,
+        payload.config_revision,
+        JSON.stringify(payload),
+        now,
+        now,
+      );
     this.db
       .prepare("UPDATE sites SET next_sync=? WHERE id=?")
       .run(now + this.interval * 1000, row.id);
@@ -388,6 +237,15 @@ export class Store {
     return this.transaction(() => {
       const old = id ? this.row(id) : null;
       if (id && !old) throw new HttpError(404, "Site not found");
+      if (
+        old &&
+        Object.hasOwn(input ?? {}, "revision") &&
+        input.revision !== old.revision
+      )
+        throw new HttpError(
+          409,
+          "Site changed since it was opened; load the latest version before saving",
+        );
       const previous = old && JSON.parse(old.config),
         config = validateSite(input, previous);
       const cleanupNeeded =
@@ -405,16 +263,12 @@ export class Store {
       )
         throw new HttpError(400, "Maximum 200 sites");
       const duplicate = this.db
-        .prepare("SELECT id,config FROM sites WHERE id != ?")
+        .prepare("SELECT id,config,error FROM sites WHERE id != ?")
         .all(id ?? "")
         .some((r) => {
-          const c = JSON.parse(r.config);
           return (
-            c.type !== "others" &&
-            c.url === config.url &&
-            c.type === config.type &&
-            c.account === config.account &&
-            (c.user_id ?? 0) === config.user_id
+            config.type !== "others" &&
+            siteIdentity(JSON.parse(r.config), r.error) === siteIdentity(config)
           );
         });
       if (duplicate)
@@ -426,29 +280,63 @@ export class Store {
       const revision = (old?.revision ?? 0) + 1;
       const identityChanged =
         previous &&
-        ["url", "type", "account", "password", "access_token", "user_id"].some(
-          (k) => (previous[k] ?? (k === "user_id" ? 0 : "")) !== config[k],
+        [
+          "url",
+          "type",
+          "account",
+          "password",
+          "access_token",
+          "user_id",
+          "auth_mode",
+        ].some(
+          (key) =>
+            (previous[key] ??
+              (key === "auth_mode"
+                ? "password"
+                : key === "user_id"
+                  ? 0
+                  : "")) !== config[key],
+        );
+      const syncChanged =
+        !old || identityChanged || previous.enabled !== config.enabled;
+      const syncRevision = old
+        ? (old.sync_revision ?? old.revision) + (syncChanged ? 1 : 0)
+        : 1;
+      if (
+        !Number.isSafeInteger(revision) ||
+        !Number.isSafeInteger(syncRevision)
+      )
+        throw new HttpError(
+          409,
+          "Site revision exhausted; export and reimport this site with a new ID",
         );
       this.db
         .prepare(
-          `INSERT INTO sites(id,revision,config,next_sync) VALUES(?,?,?,?) ON CONFLICT(id) DO UPDATE SET
-        revision=excluded.revision,config=excluded.config,next_sync=excluded.next_sync`,
+          `INSERT INTO sites(id,revision,sync_revision,config,next_sync) VALUES(?,?,?,?,?) ON CONFLICT(id) DO UPDATE SET
+        revision=excluded.revision,sync_revision=excluded.sync_revision,config=excluded.config,next_sync=excluded.next_sync`,
         )
-        .run(id, revision, JSON.stringify(config), Date.now());
+        .run(
+          id,
+          revision,
+          syncRevision,
+          JSON.stringify(config),
+          syncChanged ? Date.now() : old.next_sync,
+        );
       if (
         previous &&
         ["url", "icon"].some((key) => (previous[key] ?? "") !== config[key])
       )
         this.db
           .prepare(
-            "UPDATE sites SET favicon=NULL,favicon_blob=NULL,favicon_type=NULL WHERE id=?",
+            "UPDATE sites SET favicon=NULL,favicon_blob=NULL,favicon_type=NULL,icon_revision=icon_revision+1 WHERE id=?",
           )
           .run(id);
-      this.db
-        .prepare(
-          "UPDATE jobs SET state='superseded',payload='{}' WHERE site_id=? AND state IN ('pending','running')",
-        )
-        .run(id);
+      if (syncChanged)
+        this.db
+          .prepare(
+            "UPDATE jobs SET state='superseded',payload='{}' WHERE site_id=? AND state IN ('pending','running')",
+          )
+          .run(id);
       if (identityChanged)
         this.db
           .prepare(
@@ -476,8 +364,8 @@ export class Store {
             new Date().toISOString(),
             id,
           );
-        if (cleanupNeeded) this.enqueue(row, "delete");
-      } else if (config.enabled) this.enqueue(row);
+        if (cleanupNeeded && syncChanged) this.enqueue(row, "delete");
+      } else if (config.enabled && syncChanged) this.enqueue(row);
       return id;
     });
   }
@@ -490,7 +378,16 @@ export class Store {
           "UPDATE jobs SET state='superseded',payload='{}' WHERE site_id=? AND state IN ('pending','running')",
         )
         .run(id);
-      this.enqueue({ ...row, revision: row.revision + 1 }, "delete");
+      this.enqueue(
+        {
+          ...row,
+          sync_revision: Math.min(
+            Number.MAX_SAFE_INTEGER,
+            (row.sync_revision ?? row.revision) + 1,
+          ),
+        },
+        "delete",
+      );
       this.db.prepare("DELETE FROM sites WHERE id=?").run(id);
     });
   }
@@ -499,11 +396,17 @@ export class Store {
     if (!row) throw new HttpError(404, "Site not found");
     if (JSON.parse(row.config).type === "others")
       throw new HttpError(400, "Manual sites do not use a provider");
+    if (manual)
+      this.db
+        .prepare(
+          "UPDATE jobs SET state='superseded' WHERE site_id=? AND revision=? AND state='failed'",
+        )
+        .run(id, row.sync_revision ?? row.revision);
     const job = this.db
       .prepare(
         "SELECT id,state FROM jobs WHERE site_id=? AND revision=? AND state IN ('pending','running')",
       )
-      .get(id, row.revision);
+      .get(id, row.sync_revision ?? row.revision);
     if (job) {
       // Redelivery must reuse the same job ID so a saved Go result cannot rotate
       // tokens again. A manual retry only shortens the pending job's backoff.
@@ -517,12 +420,45 @@ export class Store {
     }
     this.enqueue(row);
   }
+  refreshModels(id) {
+    return this.transaction(() => {
+      const row = this.row(id);
+      if (!row) throw new HttpError(404, "Site not found");
+      const config = JSON.parse(row.config);
+      if (config.type === "others" || !config.enabled)
+        throw new HttpError(
+          400,
+          "Model discovery requires an enabled provider site",
+        );
+      const active = this.db
+        .prepare(
+          "SELECT id,state,payload FROM jobs WHERE site_id=? AND state IN ('pending','running') ORDER BY created_at DESC LIMIT 1",
+        )
+        .get(id);
+      if (active && JSON.parse(active.payload).refresh_models !== true)
+        throw new HttpError(
+          409,
+          "Wait for the current sync to finish before refreshing model discovery",
+        );
+      this.db
+        .prepare(
+          "UPDATE jobs SET state='superseded' WHERE site_id=? AND revision=? AND state='failed'",
+        )
+        .run(id, row.sync_revision ?? row.revision);
+      return active?.id ?? this.enqueue(row, "sync", true);
+    });
+  }
   schedule() {
     for (const row of this.db
       .prepare("SELECT * FROM sites WHERE next_sync<=?")
       .all(Date.now())) {
       const c = JSON.parse(row.config);
-      if (c.enabled && c.type !== "others") this.queue(row.id);
+      const failed = this.db
+        .prepare(
+          "SELECT id FROM jobs WHERE site_id=? AND revision=? AND state='failed' LIMIT 1",
+        )
+        .get(row.id, row.sync_revision ?? row.revision);
+      if (c.enabled && c.type !== "others" && !failed) this.queue(row.id);
     }
     this.db
       .prepare(
@@ -536,7 +472,7 @@ export class Store {
   nextJob() {
     const job = this.db
       .prepare(
-        "SELECT * FROM jobs WHERE state='pending' AND due<=? ORDER BY created_at LIMIT 1",
+        "SELECT j.* FROM jobs j WHERE j.state='pending' AND j.due<=? AND NOT EXISTS(SELECT 1 FROM jobs active WHERE active.site_id=j.site_id AND active.state='running') ORDER BY j.created_at,j.rowid LIMIT 1",
       )
       .get(Date.now());
     if (job)
@@ -558,7 +494,20 @@ export class Store {
         job.id,
       );
   }
+  reject(job, message) {
+    this.db
+      .prepare(
+        "UPDATE jobs SET state='failed',payload='{}',error=? WHERE id=? AND state='running'",
+      )
+      .run(message, job.id);
+    this.db
+      .prepare(
+        "UPDATE sites SET error=? WHERE id=? AND COALESCE(sync_revision,revision)=?",
+      )
+      .run(message, job.site_id, job.revision);
+  }
   accept(result) {
+    syncResult(result);
     return this.transaction(() => {
       const job = this.db
         .prepare("SELECT * FROM jobs WHERE id=?")
@@ -574,9 +523,10 @@ export class Store {
         row = this.row(job.site_id);
       if (
         row &&
-        row.revision === job.revision &&
+        (row.sync_revision ?? row.revision) === job.revision &&
         payload.operation === "sync"
       ) {
+        syncResult(result, true);
         if (result.url !== payload.url || result.type !== payload.type)
           throw new HttpError(409, "Site mismatch");
         const time = Date.parse(result.checked_at);
@@ -630,135 +580,18 @@ export class Store {
     });
   }
   recordChanges(row, current, checkedAt) {
-    if (!row.snapshot || JSON.parse(row.config).monitor_changes === false)
-      return;
-    const details = compareCatalogs(JSON.parse(row.snapshot), current);
-    if (!details.length) return;
-    this.db
-      .prepare(
-        "INSERT INTO catalog_changes(id,site_id,checked_at,previous_checked_at,details) VALUES(?,?,?,?,?)",
-      )
-      .run(
-        randomUUID(),
-        row.id,
-        checkedAt,
-        row.fetched_at,
-        JSON.stringify(details),
-      );
-    this.db
-      .prepare(
-        "DELETE FROM catalog_changes WHERE id IN (SELECT id FROM catalog_changes ORDER BY checked_at DESC,rowid DESC LIMIT -1 OFFSET 2000)",
-      )
-      .run();
+    return recordChanges.call(this, row, current, checkedAt);
   }
   changes(admin = false) {
-    return this.db
-      .prepare(
-        `SELECT c.*,s.config FROM catalog_changes c JOIN sites s ON c.site_id=s.id
-       ${admin ? "" : "WHERE c.dismissed=0 AND json_extract(s.config,'$.enabled') != 0 AND COALESCE(json_extract(s.config,'$.monitor_changes'),1) != 0 AND c.checked_at >= ?"}
-       ORDER BY c.checked_at DESC,c.rowid DESC LIMIT ${admin ? 200 : 20}`,
-      )
-      .all(
-        ...(admin ? [] : [new Date(Date.now() - 7 * 86400000).toISOString()]),
-      )
-      .map((row) => {
-        const config = JSON.parse(row.config);
-        return {
-          id: row.id,
-          site_id: row.site_id,
-          site_name: config.name,
-          checked_at: row.checked_at,
-          previous_checked_at: row.previous_checked_at,
-          details: JSON.parse(row.details),
-          ...(admin
-            ? {
-                dismissed: Boolean(row.dismissed),
-                enabled: config.enabled,
-                monitor_changes: config.monitor_changes !== false,
-              }
-            : {}),
-        };
-      });
+    return changes.call(this, admin);
+  }
+  getChangesPage(options) {
+    return getChangesPage.call(this, options);
   }
   changeVisibility(id, visible) {
-    if (typeof visible !== "boolean")
-      throw new HttpError(400, "Visibility must be a boolean");
-    const result = this.db
-      .prepare("UPDATE catalog_changes SET dismissed=? WHERE id=?")
-      .run(visible ? 0 : 1, id);
-    if (!result.changes) throw new HttpError(404, "Change not found");
+    return changeVisibility.call(this, id, visible);
   }
   sites(admin = false) {
-    const interval = this.interval,
-      now = Date.now();
-    return this.db
-      .prepare(
-        `SELECT s.id,s.revision,s.config,s.snapshot,s.fetched_at,s.last_checked,s.error,s.warnings,
-         j.state AS job_state,j.attempts AS job_attempts,j.error AS job_error
-         FROM sites s LEFT JOIN jobs j ON j.id=(
-           SELECT id FROM jobs WHERE site_id=s.id AND revision=s.revision AND state IN ('pending','running')
-           ORDER BY created_at DESC,rowid DESC LIMIT 1)
-         ORDER BY s.rowid`,
-      )
-      .all()
-      .flatMap((row) => {
-        const c = JSON.parse(row.config);
-        if (!admin && !c.enabled) return [];
-        const job =
-          row.job_state === null
-            ? undefined
-            : {
-                state: row.job_state,
-                attempts: row.job_attempts,
-                error: row.job_error,
-              };
-        const {
-          password,
-          account,
-          access_token,
-          user_id,
-          auth_mode,
-          manual_catalog,
-          recharge_multiplier,
-          ...metadata
-        } = c;
-        return [
-          {
-            ...metadata,
-            id: row.id,
-            fetched_at: row.fetched_at,
-            last_checked: row.last_checked,
-            catalog: row.snapshot ? JSON.parse(row.snapshot) : null,
-            status:
-              c.type === "others"
-                ? "manual"
-                : job
-                  ? job.attempts > 0 && job.error
-                    ? "retrying"
-                    : "pending"
-                  : row.error
-                    ? "error"
-                    : !row.snapshot
-                      ? "waiting"
-                      : now - Date.parse(row.fetched_at) > interval * 3000
-                        ? "stale"
-                        : "ok",
-            ...(admin
-              ? {
-                  account,
-                  has_password: Boolean(password),
-                  auth_mode: auth_mode ?? "password",
-                  user_id: user_id ?? 0,
-                  has_access_token: Boolean(access_token),
-                  manual_catalog,
-                  revision: row.revision,
-                  error: row.error || job?.error || "",
-                  warnings: JSON.parse(row.warnings || "[]"),
-                  job,
-                }
-              : {}),
-          },
-        ];
-      });
+    return sites.call(this, admin);
   }
 }

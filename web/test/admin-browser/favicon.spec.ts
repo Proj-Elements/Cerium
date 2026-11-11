@@ -45,6 +45,7 @@ test("cached favicon survives refresh without any browser request to the provide
   expect(created.status()).toBe(201);
   const { id } = await created.json();
   const cachedURL = `/api/sites/${id}/icon/image`;
+  const cachedSource = new RegExp(`^${cachedURL}(?:\\?v=\\d+)?$`);
   try {
     const backupResponse = await page.request.post(
       base + "/data/export?format=json",
@@ -80,17 +81,22 @@ test("cached favicon survives refresh without any browser request to the provide
     });
     const icon = card.locator(".site-icon img");
     await card.scrollIntoViewIfNeeded();
-    await expect(icon).toHaveAttribute("src", cachedURL);
+    await expect(icon).toHaveAttribute("src", cachedSource);
     await expect
       .poll(() =>
         icon.evaluate((image) => (image as HTMLImageElement).naturalWidth),
       )
       .toBe(16);
 
+    const current = await (await page.request.get(`${base}/sites`)).json();
+    const revision = current.sites.find(
+      (site: { id: string }) => site.id === id,
+    ).revision;
     const edited = await page.request.put(`${base}/sites/${id}`, {
       headers,
       data: {
         ...config,
+        revision,
         manual_catalog: {
           groups: [{ id: "g", name: "Group", multiplier: 0.75 }],
         },
@@ -101,10 +107,10 @@ test("cached favicon survives refresh without any browser request to the provide
       .getByRole("button", { name: "\u5237\u65b0\u76ee\u5f55", exact: true })
       .click();
     await expect(card.locator(".rate-summary strong")).toContainText("0.75");
-    await expect(icon).toHaveAttribute("src", cachedURL);
+    await expect(icon).toHaveAttribute("src", cachedSource);
     await page.reload();
     await card.scrollIntoViewIfNeeded();
-    await expect(icon).toHaveAttribute("src", cachedURL);
+    await expect(icon).toHaveAttribute("src", cachedSource);
     await expect
       .poll(() =>
         icon.evaluate((image) => (image as HTMLImageElement).naturalWidth),
@@ -118,7 +124,7 @@ test("cached favicon survives refresh without any browser request to the provide
     await page.emulateMedia({ colorScheme: "light" });
     await page.reload();
     await card.scrollIntoViewIfNeeded();
-    await expect(icon).toHaveAttribute("src", cachedURL);
+    await expect(icon).toHaveAttribute("src", cachedSource);
     await expect
       .poll(() =>
         icon.evaluate((image) => (image as HTMLImageElement).naturalWidth),
@@ -126,7 +132,7 @@ test("cached favicon survives refresh without any browser request to the provide
       .toBe(16);
     await page.screenshot({ path: "../artifacts/favicon-cache-mobile.png" });
 
-    await page.route(cachedURL, (route) =>
+    await page.route(`**${cachedURL}*`, (route) =>
       route.fulfill({ status: 404, body: "Missing" }),
     );
     await page.reload();

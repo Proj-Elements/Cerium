@@ -204,6 +204,8 @@ test("multiplier activity uses one name and green/red semantic badges and values
   await expect(dialog.locator(".decrease .chip--default")).toHaveText("倍率");
   for (const mode of ["light", "dark"] as const) {
     await page.emulateMedia({ colorScheme: mode });
+    if (mode === "dark") await expect(page.locator("html")).toHaveClass(/dark/);
+    else await expect(page.locator("html")).not.toHaveClass(/dark/);
     for (const kind of ["added", "removed"]) {
       const detail = dialog.locator(`.change-detail.${kind}`);
       const color = await detail.evaluate(

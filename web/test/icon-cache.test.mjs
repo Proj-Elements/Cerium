@@ -213,3 +213,46 @@ test("invalid or oversized imported image bytes leave settings and existing icon
   missingSelection.sites[0].favicon = null;
   assert.throws(() => store.importData(missingSelection), { status: 400 });
 });
+
+test("corrupt persisted image bytes are rediscovered immediately and failed recovery stays retryable", async (t) => {
+  const dir = mkdtempSync(join(tmpdir(), "cerium-icon-corruption-")),
+    store = new Store(join(dir, "web.db")),
+    id = store.save(config);
+  t.after(() => {
+    store.close();
+    rmSync(dir, { recursive: true, force: true });
+  });
+  await resolveIconForTest(store, id);
+  const corrupt = () => {
+    const state = JSON.parse(store.row(id).favicon);
+    state.checked_at = new Date().toISOString();
+    store.db
+      .prepare(
+        "UPDATE sites SET favicon=?,favicon_blob=?,favicon_type='image/png' WHERE id=?",
+      )
+      .run(JSON.stringify(state), Buffer.from("89504e470d0a1a0a", "hex"), id);
+  };
+  corrupt();
+  let calls = 0;
+  const resolver = createPersistentIconResolver(store, () => {
+    calls++;
+    return discovered;
+  });
+  assert.deepEqual(await resolver(id), { icons: [imagePath(id)] });
+  assert.equal(calls, 1);
+  assert.deepEqual(Buffer.from(store.row(id).favicon_blob), svg);
+  corrupt();
+  const failed = createPersistentIconResolver(store, () => ({
+    icons: [],
+    selected: "",
+  }));
+  assert.deepEqual(await failed(id), { icons: [] });
+  assert.equal(store.row(id).favicon_blob, null);
+  const state = JSON.parse(store.row(id).favicon);
+  state.checked_at = new Date(Date.now() - 16 * 60000).toISOString();
+  store.db
+    .prepare("UPDATE sites SET favicon=? WHERE id=?")
+    .run(JSON.stringify(state), id);
+  assert.deepEqual(await resolver(id), { icons: [imagePath(id)] });
+  assert.equal(calls, 2);
+});

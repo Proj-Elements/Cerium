@@ -7,7 +7,8 @@ services:
     ports: ["127.0.0.1:${WEB_PORT:-3000}:3000"]
     environment:
       CERIUM_WEBHOOK_SECRET: ${CERIUM_WEBHOOK_SECRET:?Set a 32+ character shared secret}
-      CERIUM_BACKEND_URL: http://127.0.0.1:8091
+      CERIUM_BACKEND_URL: http://sync:8091
+      CERIUM_DISPATCH_CONCURRENCY: ${CERIUM_DISPATCH_CONCURRENCY:-4}
       SYNC_INTERVAL_SECONDS: ${SYNC_INTERVAL_SECONDS:-900}
       COOKIE_SECURE: ${COOKIE_SECURE:-false}
       PUBLIC_ORIGIN: ${PUBLIC_ORIGIN:-}
@@ -19,18 +20,16 @@ services:
     stop_grace_period: 180s
   sync:
     build: .
-    # Two containers and two databases; only the network namespace is shared.
-    # The worker is not exposed to the host and webhooks can use localhost.
-    network_mode: service:web
+    command: [serve, -db, /data/cerium.db, -listen, "0.0.0.0:8091"]
     depends_on:
       web:
         condition: service_healthy
-        restart: true
     environment:
       CERIUM_WEBHOOK_SECRET: ${CERIUM_WEBHOOK_SECRET:?Set a 32+ character shared secret}
-      CERIUM_WEBHOOK_URL: http://127.0.0.1:3000/api/webhooks/sync
-      CERIUM_TURNSTILE_SOLVER_URL: ${CERIUM_TURNSTILE_SOLVER_URL:-http://127.0.0.1:8092}
+      CERIUM_WEBHOOK_URL: http://web:3000/api/webhooks/sync
+      CERIUM_TURNSTILE_SOLVER_URL: ${CERIUM_TURNSTILE_SOLVER_URL:-http://solver:8092}
       CERIUM_MODEL_PROBES_PER_RUN: ${CERIUM_MODEL_PROBES_PER_RUN:-4}
+      CERIUM_BRIDGE_CONCURRENCY: ${CERIUM_BRIDGE_CONCURRENCY:-4}
       CERIUM_OUTBOUND_PROXY_URL: ${CERIUM_OUTBOUND_PROXY_URL:-}
     volumes: [sync-data:/data]
     restart: unless-stopped
@@ -44,11 +43,8 @@ services:
   solver:
     profiles: [solver]
     build: ./solver
-    network_mode: service:web
-    depends_on:
-      web:
-        condition: service_healthy
-        restart: true
+    environment:
+      SOLVER_HOST: 0.0.0.0
     restart: unless-stopped
     init: true
     shm_size: 256mb

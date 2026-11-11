@@ -1,0 +1,89 @@
+package contracts
+
+import "time"
+
+type ModelPrice struct {
+	Model      string   `json:"model"`
+	Mode       string   `json:"mode"`
+	Input      *float64 `json:"input,omitempty"`
+	Output     *float64 `json:"output,omitempty"`
+	CacheRead  *float64 `json:"cache_read,omitempty"`
+	CacheWrite *float64 `json:"cache_write,omitempty"`
+	Request    *float64 `json:"request,omitempty"`
+	Expression string   `json:"expression,omitempty"`
+}
+
+type Group struct {
+	ID                string       `json:"id"`
+	Name              string       `json:"name"`
+	Description       string       `json:"description,omitempty"`
+	Platform          string       `json:"platform,omitempty"`
+	Multiplier        *float64     `json:"multiplier"`
+	DefaultMultiplier *float64     `json:"default_multiplier"`
+	MultiplierSource  string       `json:"multiplier_source"`
+	Models            []string     `json:"models"`
+	ModelsKnown       bool         `json:"models_known"`
+	ModelsSource      string       `json:"models_source,omitempty"`
+	ModelsFetchedAt   string       `json:"models_fetched_at,omitempty"`
+	Prices            []ModelPrice `json:"prices,omitempty"`
+}
+
+type Catalog struct {
+	Groups   []Group  `json:"groups"`
+	Warnings []string `json:"warnings,omitempty"`
+	Scope    string   `json:"scope,omitempty"`
+}
+
+type BridgeJob struct {
+	JobID         string `json:"job_id"`
+	SiteID        string `json:"site_id"`
+	Revision      int64  `json:"config_revision"`
+	Operation     string `json:"operation"`
+	Name          string `json:"name"`
+	URL           string `json:"url"`
+	Type          string `json:"type"`
+	Account       string `json:"account"`
+	Password      string `json:"password"`
+	AccessToken   string `json:"access_token,omitempty"`
+	UserID        int64  `json:"user_id,omitempty"`
+	RefreshModels bool   `json:"refresh_models,omitempty"`
+}
+
+type Result struct {
+	CredentialID   int64     `json:"credential_id"`
+	Name           string    `json:"name"`
+	URL            string    `json:"url"`
+	Type           string    `json:"type"`
+	CheckedAt      time.Time `json:"checked_at"`
+	Refresh        string    `json:"refresh"`
+	Catalog        *Catalog  `json:"catalog,omitempty"`
+	Warnings       []string  `json:"warnings,omitempty"`
+	Error          string    `json:"error,omitempty"`
+	ErrorStage     string    `json:"error_stage,omitempty"`
+	ErrorCategory  string    `json:"error_category,omitempty"`
+	SiteID         string    `json:"site_id,omitempty"`
+	JobID          string    `json:"job_id,omitempty"`
+	ConfigRevision int64     `json:"config_revision,omitempty"`
+}
+
+const wireSchema = `{"$schema":"https://json-schema.org/draft/2020-12/schema","$id":"https://cerium.local/contracts/wire.schema.json","$defs":{"ModelPrice":{"type":"object","required":["model","mode"],"properties":{"model":{"type":"string","minLength":1,"maxLength":300,"x-maxUtf16Length":300},"mode":{"type":"string","enum":["tokens","request","dynamic","unknown"]},"input":{"type":["number","null"],"minimum":0,"maximum":1000000000000},"output":{"type":["number","null"],"minimum":0,"maximum":1000000000000},"cache_read":{"type":["number","null"],"minimum":0,"maximum":1000000000000},"cache_write":{"type":["number","null"],"minimum":0,"maximum":1000000000000},"request":{"type":["number","null"],"minimum":0,"maximum":1000000000000},"expression":{"type":"string","maxLength":16000,"x-maxUtf16Length":16000}}},"Group":{"type":"object","required":["id","name","multiplier","models_known","models"],"properties":{"id":{"type":"string","minLength":1,"maxLength":200,"x-maxUtf16Length":200,"x-goName":"ID"},"name":{"type":"string","minLength":1,"maxLength":200,"x-maxUtf16Length":200},"description":{"type":"string","maxLength":2000,"x-maxUtf16Length":2000},"platform":{"type":"string","maxLength":100,"x-maxUtf16Length":100},"multiplier":{"type":["number","null"],"minimum":0,"maximum":1000000000000},"default_multiplier":{"type":["number","null"],"minimum":0,"maximum":1000000000000,"x-goOmitEmpty":false},"multiplier_source":{"type":"string","maxLength":100,"x-maxUtf16Length":100,"x-goOmitEmpty":false},"models":{"type":["array","null"],"maxItems":10000,"items":{"type":"string","minLength":1,"maxLength":300,"x-maxUtf16Length":300},"x-tsType":"string[]"},"models_known":{"type":"boolean"},"models_source":{"type":"string","maxLength":100,"x-maxUtf16Length":100},"models_fetched_at":{"type":"string","maxLength":64,"x-maxUtf16Length":64},"prices":{"type":["array","null"],"maxItems":10000,"items":{"$ref":"#/$defs/ModelPrice"},"x-tsType":"Price[]"}}},"Catalog":{"type":"object","required":["groups"],"properties":{"groups":{"type":"array","maxItems":500,"items":{"$ref":"#/$defs/Group"}},"warnings":{"type":["array","null"],"maxItems":1000,"items":{"type":"string","maxLength":2000,"x-maxUtf16Length":2000}},"scope":{"type":"string","enum":["","public","private","manual"],"x-tsRequired":true}}},"BridgeJob":{"type":"object","required":["job_id","site_id","config_revision","operation","name","url","type","account","password"],"properties":{"job_id":{"type":"string","minLength":16,"maxLength":128,"x-maxUtf16Length":128,"x-goName":"JobID"},"site_id":{"type":"string","minLength":16,"maxLength":128,"x-maxUtf16Length":128,"x-goName":"SiteID"},"config_revision":{"type":"integer","minimum":1,"maximum":9007199254740991,"x-goName":"Revision"},"operation":{"type":"string","enum":["sync","delete"]},"name":{"type":"string","maxLength":100,"x-maxUtf16Length":100},"url":{"type":"string","maxLength":2048,"x-maxUtf16Length":2048,"x-goName":"URL"},"type":{"type":"string","enum":["newapi","sub2api","others"]},"account":{"type":"string","maxLength":320,"x-maxUtf16Length":320},"password":{"type":"string","maxLength":4096,"x-maxUtf16Length":4096},"access_token":{"type":"string","maxLength":16384,"x-maxUtf16Length":16384},"user_id":{"type":"integer","minimum":0,"maximum":9007199254740991,"x-goName":"UserID"},"refresh_models":{"type":"boolean"}}},"SyncResult":{"x-goName":"Result","type":"object","required":["url","type","checked_at"],"properties":{"credential_id":{"type":"integer","minimum":0,"maximum":9007199254740991,"x-goName":"CredentialID","x-goOmitEmpty":false},"name":{"type":"string","maxLength":100,"x-maxUtf16Length":100,"x-goOmitEmpty":false},"url":{"type":"string","maxLength":2048,"x-maxUtf16Length":2048,"x-goName":"URL"},"type":{"type":"string","enum":["newapi","sub2api","others"]},"checked_at":{"type":"string","format":"date-time","x-goType":"time.Time"},"refresh":{"type":"string","maxLength":100,"x-maxUtf16Length":100,"x-goOmitEmpty":false},"catalog":{"$ref":"#/$defs/Catalog","x-goPointer":true},"warnings":{"type":["array","null"],"maxItems":1000,"items":{"type":"string","maxLength":2000,"x-maxUtf16Length":2000}},"error":{"type":"string","maxLength":2000,"x-maxUtf16Length":2000},"error_stage":{"type":"string","maxLength":64,"x-maxUtf16Length":64},"error_category":{"type":"string","maxLength":64,"x-maxUtf16Length":64},"site_id":{"type":"string","minLength":16,"maxLength":128,"x-maxUtf16Length":128,"x-goName":"SiteID"},"job_id":{"type":"string","minLength":16,"maxLength":128,"x-maxUtf16Length":128,"x-goName":"JobID"},"config_revision":{"type":"integer","minimum":1,"maximum":9007199254740991}}},"BridgeIdentity":{"x-validateOnly":true,"type":"object","required":["site_id","job_id","config_revision"],"properties":{"site_id":{"$ref":"#/$defs/SyncResult/properties/site_id"},"job_id":{"$ref":"#/$defs/SyncResult/properties/job_id"},"config_revision":{"$ref":"#/$defs/SyncResult/properties/config_revision"}}},"BridgeResult":{"x-validateOnly":true,"allOf":[{"$ref":"#/$defs/SyncResult"},{"$ref":"#/$defs/BridgeIdentity"}]}}}`
+
+func ValidateModelPrice(value *ModelPrice) error {
+	return Validate("ModelPrice", value)
+}
+
+func ValidateGroup(value *Group) error {
+	return Validate("Group", value)
+}
+
+func ValidateCatalog(value *Catalog) error {
+	return Validate("Catalog", value)
+}
+
+func ValidateBridgeJob(value *BridgeJob) error {
+	return Validate("BridgeJob", value)
+}
+
+func ValidateResult(value *Result) error {
+	return Validate("SyncResult", value)
+}

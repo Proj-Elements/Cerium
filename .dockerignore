@@ -4,4 +4,6 @@
 !*.go
 !cmd/
 !cmd/**
+!contracts/
+!contracts/**
 !Dockerfile

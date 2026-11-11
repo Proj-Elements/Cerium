@@ -23,7 +23,11 @@ jobs:
     outputs:
       node_tests: ${{ steps.select.outputs.node_tests }}
       go: ${{ steps.select.outputs.go }}
+      go_packages: ${{ steps.select.outputs.go_packages }}
       solver: ${{ steps.select.outputs.solver }}
+      frontend: ${{ steps.select.outputs.frontend }}
+      contracts: ${{ steps.select.outputs.contracts }}
+      containers: ${{ steps.select.outputs.containers }}
     steps:
       - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
         with:
@@ -49,6 +53,9 @@ jobs:
         with:
           node-version: "24.22.2"
           package-manager-cache: false
+      - name: Install locked archive tools for affected build-tool regressions
+        if: contains(needs.changes.outputs.node_tests, 'web/test/premium-install.test.mjs')
+        run: npm ci --prefix web/build-tools --ignore-scripts --no-audit --no-fund
       - name: Run selected unit modules without installing frontend dependencies
         env:
           NODE_TESTS: ${{ needs.changes.outputs.node_tests }}
@@ -76,8 +83,109 @@ jobs:
         with:
           go-version: "1.26.7"
           cache: false
-      - name: Run affected HTTP, proxy, callback and bridge contracts
-        run: go test -race . -run 'Test(ConfiguredOutboundProxy|InvalidOutboundProxy|ConnectionRetry|HTTPEnvelope|APIRequests|HTTPResponse|URLPrefix|Webhook|Bridge|Sub2APITurnstile|Turnstile)' -count=1
+      - name: Run only selected owning packages and their new regressions
+        env:
+          GO_PACKAGES: ${{ needs.changes.outputs.go_packages }}
+        run: |
+          python3 - <<'PY'
+          import json, os, subprocess
+          packages = json.loads(os.environ["GO_PACKAGES"])
+          if not packages or any(package not in (".", "./cmd/cerium") for package in packages):
+              raise ValueError("Invalid selected Go packages")
+          subprocess.run(["go", "test", "-race", *packages, "-count=1"], check=True)
+          PY
+
+  contracts:
+    name: Shared wire contracts
+    needs: changes
+    if: needs.changes.outputs.contracts == 'true'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@249970729cb0ef3589644e2896645e5dc5ba9c38 # v6
+        with:
+          node-version: "24.22.2"
+          package-manager-cache: false
+      - uses: actions/setup-go@4dc6199c7b1a012772edbd06daecab0f50c9053c # v6.1.0
+        with:
+          go-version: "1.26.7"
+          cache: false
+      - name: Reject schema drift and compare Go and Node boundary vectors
+        run: |
+          python3 contracts/generate.py --check
+          go test ./contracts -run TestContract -count=1
+          node --test contracts/contract.test.mjs
+
+  frontend:
+    name: Affected frontend source validation
+    needs: changes
+    if: needs.changes.outputs.frontend == 'true'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@249970729cb0ef3589644e2896645e5dc5ba9c38 # v6
+        with:
+          node-version: "24.22.2"
+          package-manager-cache: false
+      - name: Install the checked lockfile without setup hooks
+        working-directory: web
+        run: npm ci --ignore-scripts --legacy-peer-deps --no-audit --no-fund
+      - name: Parse TypeScript, TSX and CSS and check local imports
+        run: node .github/scripts/check_frontend.mjs
+      - name: Build with authorized premium artifacts when available
+        env:
+          HEROUI_SETUP_TOKEN: ${{ github.event_name == 'push' && secrets.HEROUI_SETUP_TOKEN || '' }}
+        working-directory: web
+        run: |
+          if test -n "$HEROUI_SETUP_TOKEN"; then
+            npm ci --prefix build-tools --ignore-scripts --no-audit --no-fund
+            node scripts/install-premium.mjs
+            npm run build
+            echo 'Frontend full typecheck and production build passed with authorized premium artifacts.' >> "$GITHUB_STEP_SUMMARY"
+          else
+            echo 'Frontend syntax, CSS and local-import checks ran. Full typecheck, production build and browser runtime were unavailable: this event has no authorized HeroUI setup secret. Pure TypeScript behavior is covered by the selected Node unit modules; a green focused check is not full frontend verification.' >> "$GITHUB_STEP_SUMMARY"
+          fi
+
+  containers:
+    name: Affected container configuration
+    needs: changes
+    if: needs.changes.outputs.containers != '[]'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
+        with:
+          persist-credentials: false
+      - name: Validate complete Compose configuration without production credentials
+        env:
+          CERIUM_WEBHOOK_SECRET: ci-configuration-placeholder-32-characters
+          HEROUI_SETUP_TOKEN: ci-configuration-placeholder
+        run: docker compose --profile solver config --quiet
+      - name: Build the sync image when its container inputs change
+        env:
+          CONTAINERS: ${{ needs.changes.outputs.containers }}
+        run: |
+          python3 - <<'PY'
+          import json, os, subprocess
+          if "sync" in json.loads(os.environ["CONTAINERS"]):
+              subprocess.run(["docker", "build", "--tag", "cerium-sync-ci:tested", "."], check=True)
+          PY
+      - name: Record the premium container validation boundary
+        env:
+          CONTAINERS: ${{ needs.changes.outputs.containers }}
+        run: |
+          python3 - <<'PY'
+          import json, os
+          if "web" in json.loads(os.environ["CONTAINERS"]):
+              with open(os.environ["GITHUB_STEP_SUMMARY"], "a") as output:
+                  output.write("Web Docker configuration was selected and parsed. Its premium image build and runtime require authorized HeroUI artifacts and remain separate from this configuration check.\n")
+          PY
 
   solver:
     name: Solver image and polling regressions
@@ -96,11 +204,12 @@ jobs:
           docker run --rm --network none --read-only --tmpfs /tmp:rw,nosuid,nodev,size=128m \
             --entrypoint python \
             --mount "type=bind,source=$PWD/solver/test_polling.py,target=/app/test_polling.py,readonly" \
-            "$image" -m unittest -v test_polling
+            --mount "type=bind,source=$PWD/solver/test_runner.py,target=/app/test_runner.py,readonly" \
+            "$image" -m unittest -v test_polling test_runner
 
   complete:
     name: Focused checks passed
-    needs: [changes, node, go, solver]
+    needs: [changes, node, go, solver, contracts, frontend, containers]
     if: always()
     runs-on: ubuntu-24.04
     timeout-minutes: 2
@@ -114,6 +223,12 @@ jobs:
           GO_RESULT: ${{ needs.go.result }}
           SOLVER_SELECTED: ${{ needs.changes.outputs.solver }}
           SOLVER_RESULT: ${{ needs.solver.result }}
+          CONTRACTS_SELECTED: ${{ needs.changes.outputs.contracts }}
+          CONTRACTS_RESULT: ${{ needs.contracts.result }}
+          FRONTEND_SELECTED: ${{ needs.changes.outputs.frontend }}
+          FRONTEND_RESULT: ${{ needs.frontend.result }}
+          CONTAINERS_SELECTED: ${{ needs.changes.outputs.containers }}
+          CONTAINERS_RESULT: ${{ needs.containers.result }}
         run: |
           test "$SELECTION_RESULT" = success
           if test "$NODE_TESTS" != '[]'; then
@@ -130,4 +245,19 @@ jobs:
             test "$SOLVER_RESULT" = success
           else
             test "$SOLVER_RESULT" = skipped
+          fi
+          if test "$CONTRACTS_SELECTED" = true; then
+            test "$CONTRACTS_RESULT" = success
+          else
+            test "$CONTRACTS_RESULT" = skipped
+          fi
+          if test "$FRONTEND_SELECTED" = true; then
+            test "$FRONTEND_RESULT" = success
+          else
+            test "$FRONTEND_RESULT" = skipped
+          fi
+          if test "$CONTAINERS_SELECTED" != '[]'; then
+            test "$CONTAINERS_RESULT" = success
+          else
+            test "$CONTAINERS_RESULT" = skipped
           fi

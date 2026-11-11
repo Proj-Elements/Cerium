@@ -4,11 +4,60 @@ import { Empty, Glyph, n, when } from "./ui";
 import { SiteIcon } from "./relay";
 import type { ChangeNotice, GroupChange, Site } from "./types";
 import closeIcon from "./assets/figma-close.svg";
+import { changeSummary, priceDescription } from "./change-display";
 
 function value(rate: number | null, dynamic: boolean) {
   return dynamic ? "动态" : rate == null ? "未知" : `${n(rate)}×`;
 }
-export function ChangeDetail({ change }: { change: GroupChange }) {
+export function ChangeDetail({
+  change,
+  compact = false,
+}: {
+  change: GroupChange;
+  compact?: boolean;
+}) {
+  if (change.kind === "models" || change.kind === "prices") {
+    const summary = changeSummary(change);
+    const label = change.kind === "models" ? "模型" : "价格";
+    return (
+      <div className={`change-detail ${change.kind}`}>
+        <Chip size="sm" variant="soft">
+          <Chip.Label>{label}</Chip.Label>
+        </Chip>
+        <span className="change-group-name">{change.name}</span>
+        {compact ? (
+          <span>{summary}</span>
+        ) : (
+          <details className="change-catalog-details">
+            <summary>{summary}</summary>
+            <ul>
+              {change.kind === "models" ? (
+                <>
+                  {(change.models_added ?? []).map((model) => (
+                    <li key={`added-${model}`}>新增 {model}</li>
+                  ))}
+                  {(change.models_removed ?? []).map((model) => (
+                    <li key={`removed-${model}`}>移除 {model}</li>
+                  ))}
+                </>
+              ) : (
+                (change.price_changes ?? []).map((item) => (
+                  <li key={item.model}>
+                    <strong>{item.model}</strong>
+                    <span className="old-value">
+                      {priceDescription(item.before)}
+                    </span>
+                    <Glyph name="arrow-right" size={13} />
+                    <span>{priceDescription(item.after)}</span>
+                  </li>
+                ))
+              )}
+            </ul>
+          </details>
+        )}
+      </div>
+    );
+  }
   const direction =
     change.kind === "multiplier" &&
     !change.before_dynamic &&
@@ -73,7 +122,7 @@ export function ChangeList({
     return (
       <Empty
         title="一切如常，暂时没有波动"
-        description="有新的分组增删或倍率调整时，变动会自动记录在这里。首次同步仅建立基准，不触发通报。"
+        description="有新的分组、模型增删或倍率、价格调整时，变动会自动记录在这里。首次同步仅建立基准，不触发通报。"
       />
     );
   const sitesById = new Map(sites.map((site) => [site.id, site]));
@@ -186,7 +235,8 @@ export function ChangesDialog({
               </div>
               <Modal.Heading>每一次变化，都有迹可循。</Modal.Heading>
               <p className="muted">
-                最近 7 天的分组与倍率变动，来自前后两次成功快照的比较。
+                最近 7
+                天的分组、模型、倍率与价格变动，来自前后两次成功快照的比较。
               </p>
             </Modal.Header>
             <Modal.Body>

@@ -5,6 +5,7 @@ import {
   scryptSync,
   timingSafeEqual,
   createHmac,
+  randomUUID,
 } from "node:crypto";
 import { readFileSync } from "node:fs";
 import { join, resolve, extname } from "node:path";
@@ -13,6 +14,12 @@ import { Store } from "./store.mjs";
 import { HttpError, syncInterval } from "./validation.mjs";
 import { parseOrigin, validOrigin } from "./origin.mjs";
 import { createPersistentIconResolver } from "./icons.mjs";
+import { iconType } from "./icon-content.mjs";
+import { Dispatcher } from "./dispatcher.mjs";
+import { diagnostic } from "./diagnostics.mjs";
+import { sendDirectory } from "./http-cache.mjs";
+import { createRecovery, RECOVERY_LIMIT } from "./recovery.mjs";
+import * as backupStorage from "./backup.mjs";
 import {
   BACKUP_LIMIT,
   backupFormat,
@@ -76,11 +83,49 @@ export function createApp(options = {}) {
     throw new Error("Invalid backend URL");
   const base = `${store.adminPath}/api`;
   const resolveIcon = createPersistentIconResolver(store, options.resolveIcon);
-  let busy = false,
-    stopped = false,
-    timer,
-    active;
   const log = options.log ?? console.log;
+  const dispatcher = new Dispatcher({
+    store,
+    backend,
+    secret,
+    sign,
+    log,
+    concurrency: Number(
+      options.dispatchConcurrency ??
+        process.env.CERIUM_DISPATCH_CONCURRENCY ??
+        4,
+    ),
+    enabled: options.dispatch !== false,
+    fetchWorker: options.fetchWorker ?? fetch,
+  });
+  let timer,
+    dataOperation = null,
+    lastCallback = null,
+    reconciliation;
+  const activeMutations = new Set(),
+    activeIcons = new Set();
+  const recovery = createRecovery({
+    store,
+    dispatcher,
+    backend,
+    secret,
+    sign,
+    storage: backupStorage,
+    log,
+    fetchWorker: options.fetchWorker ?? fetch,
+  });
+  async function exclusiveData(operation, callback) {
+    if (dataOperation)
+      throw new HttpError(409, "Another backup or restore is in progress");
+    dataOperation = operation;
+    try {
+      if (operation === "recovery")
+        await Promise.allSettled([...activeMutations, ...activeIcons]);
+      return await callback();
+    } finally {
+      dataOperation = null;
+    }
+  }
   log(
     `Cerium admin path: ${store.adminPath}\nCerium admin password (rotates on restart): ${password}`,
   );
@@ -143,47 +188,31 @@ export function createApp(options = {}) {
       throw new HttpError(401, "Login required");
     return key;
   }
-  async function tick() {
-    if (busy || stopped) return;
-    busy = true;
-    try {
-      store.schedule();
-      const job = store.nextJob();
-      if (!job) return;
-      try {
-        const timestamp = String(Math.floor(Date.now() / 1000));
-        const response = await fetch(`${backend.replace(/\/$/, "")}/v1/sync`, {
-          method: "POST",
-          redirect: "error",
-          signal: AbortSignal.timeout(165000),
-          headers: {
-            "Content-Type": "application/json",
-            "X-Cerium-Timestamp": timestamp,
-            "X-Cerium-Signature": sign(secret, timestamp, job.payload),
-          },
-          body: job.payload,
-        });
-        await response.body?.cancel();
-        const state = store.db
-          .prepare("SELECT state FROM jobs WHERE id=?")
-          .get(job.id)?.state;
-        if (state === "running")
-          store.retry(
-            job,
-            response.ok
-              ? "Worker has not delivered its signed result"
-              : `Worker returned HTTP ${response.status}`,
-          );
-      } catch {
-        store.retry(job, "Worker unreachable or timed out; retry scheduled");
-      }
-    } catch {
-      log("Cerium dispatcher failed; queued jobs remain persisted");
-    } finally {
-      busy = false;
-    }
-  }
   const server = createServer(async (req, res) => {
+    let recoveryRequest = false;
+    try {
+      const pathname = new URL(req.url, "http://localhost").pathname;
+      recoveryRequest = [
+        `${base}/data/recovery/export`,
+        `${base}/data/recovery/import`,
+      ].includes(pathname);
+    } catch {}
+    if (req.method !== "GET" && !recoveryRequest) {
+      let finish;
+      const complete = new Promise((resolve) => {
+        finish = resolve;
+      });
+      activeMutations.add(complete);
+      const done = () => {
+        activeMutations.delete(complete);
+        finish();
+      };
+      res.once("finish", done);
+      res.once("close", done);
+    }
+    const requestId = randomUUID();
+    let stage = "request";
+    res.setHeader("X-Cerium-Request-ID", requestId);
     res.setHeader("Cache-Control", "no-store");
     res.setHeader("X-Content-Type-Options", "nosniff");
     res.setHeader("Referrer-Policy", "no-referrer");
@@ -198,12 +227,78 @@ export function createApp(options = {}) {
       const method = req.method;
       if (path === "/healthz" && method === "GET")
         return send(res, 200, { ok: true });
-      if (path === "/api/sites" && method === "GET")
-        return send(res, 200, {
+      if (path === "/readyz" && method === "GET") {
+        stage = "readiness";
+        store.db.prepare("SELECT 1").get();
+        const dispatch = dispatcher.status();
+        let worker;
+        try {
+          const response = await (options.fetchWorker ?? fetch)(
+            `${backend.replace(/\/+$/, "")}/readyz`,
+            {
+              redirect: "error",
+              signal: AbortSignal.timeout(2000),
+            },
+          );
+          worker = { ready: response.ok };
+          const content = await response.text();
+          if (content.length > 8192)
+            throw new Error("Oversized worker readiness response");
+          const detail = JSON.parse(content);
+          for (const field of [
+            "database",
+            "active_jobs",
+            "capacity",
+            "pending_callbacks",
+            "stale_callbacks",
+            "pending_model_cleanup",
+            "failed_model_cleanup",
+          ])
+            if (
+              typeof detail[field] === "boolean" ||
+              Number.isSafeInteger(detail[field])
+            )
+              worker[field] = detail[field];
+          if (detail.solver && typeof detail.solver === "object") {
+            worker.solver = Object.fromEntries(
+              ["configured", "ready", "capacity_available"]
+                .filter(
+                  (key) =>
+                    typeof detail.solver[key] === "boolean" ||
+                    Number.isSafeInteger(detail.solver[key]),
+                )
+                .map((key) => [key, detail.solver[key]]),
+            );
+          }
+        } catch (error) {
+          worker = {
+            ready: false,
+            ...diagnostic(error, "worker_readiness", requestId),
+          };
+        }
+        const ready =
+          dispatch.ready &&
+          worker.ready &&
+          !recovery.pending() &&
+          dataOperation !== "recovery";
+        return send(res, ready ? 200 : 503, {
+          ok: ready,
+          database: { ready: true },
+          dispatcher: dispatch,
+          worker,
+          callback: { last_received: lastCallback },
+          maintenance:
+            dataOperation ?? (recovery.pending() ? "recovery_pending" : null),
+        });
+      }
+      if (path === "/api/sites" && method === "GET") {
+        stage = "public_directory";
+        return await sendDirectory(req, res, {
           sites: store.sites(),
           changes: store.changes(),
           interval: store.interval,
         });
+      }
       const imageMatch = path.match(
         /^\/api\/sites\/([\da-f-]{36})\/icon\/image$/,
       );
@@ -213,7 +308,9 @@ export function createApp(options = {}) {
           !row ||
           !JSON.parse(row.config).enabled ||
           !row.favicon_blob ||
-          !row.favicon_type
+          !row.favicon_type ||
+          iconType(Buffer.from(row.favicon_blob), row.favicon_type) !==
+            row.favicon_type
         )
           throw new HttpError(404, "Icon not found");
         // A cached SVG must also be isolated when opened as a document.
@@ -229,9 +326,26 @@ export function createApp(options = {}) {
       }
       const iconMatch = path.match(/^\/api\/sites\/([\da-f-]{36})\/icon$/);
       if (iconMatch && method === "GET") {
-        return send(res, 200, await resolveIcon(iconMatch[1]));
+        if (dataOperation === "recovery" || recovery.pending())
+          throw new HttpError(
+            503,
+            "Icon discovery is paused during disaster recovery",
+          );
+        const work = resolveIcon(iconMatch[1]);
+        activeIcons.add(work);
+        try {
+          return send(res, 200, await work);
+        } finally {
+          activeIcons.delete(work);
+        }
       }
       if (path === "/api/webhooks/sync" && method === "POST") {
+        stage = "callback";
+        if (dataOperation === "recovery" || recovery.pending())
+          throw new HttpError(
+            503,
+            "Callback delivery is paused during disaster recovery; retry delivery",
+          );
         const raw = await body(req, 8 << 20),
           timestamp = req.headers["x-cerium-timestamp"];
         if (
@@ -245,6 +359,7 @@ export function createApp(options = {}) {
         )
           throw new HttpError(401, "Invalid signature");
         store.accept(json(raw));
+        lastCallback = new Date().toISOString();
         return send(res, 200, { accepted: true });
       }
       if (path.startsWith(`${base}/`)) {
@@ -280,6 +395,15 @@ export function createApp(options = {}) {
           return send(res, 200, { ok: true });
         }
         const key = session(req);
+        if (
+          method !== "GET" &&
+          (dataOperation === "recovery" || recovery.pending()) &&
+          path !== `${base}/data/recovery/import`
+        )
+          throw new HttpError(
+            409,
+            "Disaster recovery is in progress; retry this change afterward",
+          );
         if (path === `${base}/logout` && method === "POST") {
           sessions.delete(key);
           res.setHeader("Set-Cookie", cookie("", 0));
@@ -293,10 +417,19 @@ export function createApp(options = {}) {
         if (path === `${base}/settings` && method === "PUT")
           return send(res, 200, store.setSettings(json(await body(req, 4096))));
         if (path === `${base}/data/export` && method === "POST") {
+          stage = "backup_export";
+          const cache = target.searchParams.get("cache") ?? "include";
+          if (!["include", "omit"].includes(cache))
+            throw new HttpError(
+              400,
+              "Backup cache mode must be include or omit",
+            );
           const format = backupFormat(
               target.searchParams.get("format") ?? "json",
             ),
-            bytes = await serializeBackup(store, format),
+            bytes = await exclusiveData("export", () =>
+              serializeBackup(store, format, { cache }),
+            ),
             stamp = new Date().toISOString().replace(/[-:]|\.\d{3}/g, "");
           res.writeHead(200, {
             "Content-Type":
@@ -305,34 +438,88 @@ export function createApp(options = {}) {
                 : "application/vnd.sqlite3",
             "Content-Disposition": `attachment; filename="cerium-web-${stamp}.${format === "json" ? "json" : "db"}"`,
             "Content-Length": bytes.length,
+            "X-Cerium-Backup-Cache": bytes.cacheOmitted
+              ? "omitted"
+              : cache === "omit"
+                ? "omitted"
+                : "included",
           });
           res.end(bytes);
           return;
         }
         if (path === `${base}/data/import` && method === "POST") {
+          stage = "backup_import";
           const format = backupFormat(
               target.searchParams.get("format") ?? "json",
             ),
             mode = target.searchParams.get("mode") ?? "merge";
           if (!["merge", "replace"].includes(mode))
             throw new HttpError(400, "Import mode must be merge or replace");
-          const raw = await body(
-              req,
-              BACKUP_LIMIT,
-              format === "json"
-                ? ["application/json"]
-                : ["application/vnd.sqlite3", "application/octet-stream"],
-            ),
-            data = parseBackup(raw, format, store.interval);
-          return send(res, 200, store.importData(data, mode));
+          return send(
+            res,
+            200,
+            await exclusiveData("import", async () => {
+              const raw = await body(
+                req,
+                BACKUP_LIMIT,
+                format === "json"
+                  ? ["application/json"]
+                  : ["application/vnd.sqlite3", "application/octet-stream"],
+              );
+              const data = await (
+                backupStorage.parseBackupAsync ?? parseBackup
+              )(raw, format, store.interval);
+              return store.importData(data, mode);
+            }),
+          );
         }
-        if (path === `${base}/sites` && method === "GET")
-          return send(res, 200, {
-            sites: store.sites(true),
-            changes: store.changes(true),
-            interval: store.interval,
-            payment_presets: store.paymentPresets,
+        if (path === `${base}/data/recovery/export` && method === "POST") {
+          stage = "recovery_export";
+          const bytes = await exclusiveData("recovery", () =>
+            recovery.export(),
+          );
+          const stamp = new Date().toISOString().replace(/[-:]|\.\d{3}/g, "");
+          res.writeHead(200, {
+            "Content-Type": "application/gzip",
+            "Content-Disposition": `attachment; filename="cerium-recovery-${stamp}.cerium.gz"`,
+            "Content-Length": bytes.length,
           });
+          return res.end(bytes);
+        }
+        if (path === `${base}/data/recovery/import` && method === "POST") {
+          stage = "recovery_import";
+          const result = await exclusiveData("recovery", async () =>
+            recovery.import(
+              await body(req, RECOVERY_LIMIT, ["application/gzip"]),
+            ),
+          );
+          sessions.clear();
+          return send(res, 200, result);
+        }
+        if (path === `${base}/sites` && method === "GET") {
+          stage = "admin_directory";
+          return await sendDirectory(
+            req,
+            res,
+            {
+              sites: store.sites(true),
+              changes: store.changes(true),
+              interval: store.interval,
+              payment_presets: store.paymentPresets,
+            },
+            "private",
+          );
+        }
+        if (path === `${base}/changes` && method === "GET")
+          return send(
+            res,
+            200,
+            store.getChangesPage({
+              limit: Number(target.searchParams.get("limit") ?? 50),
+              offset: Number(target.searchParams.get("offset") ?? 0),
+              q: target.searchParams.get("q") ?? "",
+            }),
+          );
         const changeMatch = path
           .slice(base.length)
           .match(/^\/changes\/([\da-f-]{36})\/visibility$/);
@@ -347,17 +534,33 @@ export function createApp(options = {}) {
           return send(res, 201, { id: store.save(json(await body(req))) });
         const match = path
           .slice(base.length)
-          .match(/^\/sites\/([\da-f-]{36})(\/sync)?$/);
+          .match(/^\/sites\/([\da-f-]{36})(\/sync|\/models\/refresh)?$/);
         if (match) {
           const id = match[1];
-          if (match[2] && method === "POST") {
+          if (match[2] === "/models/refresh" && method === "POST") {
+            if (json(await body(req, 4096)).confirmed !== true)
+              throw new HttpError(
+                400,
+                "Explicit confirmation is required to refresh model probes",
+              );
+            store.refreshModels(id);
+            return send(res, 202, { queued: true });
+          }
+          if (match[2] === "/sync" && method === "POST") {
             store.queue(id, true);
             return send(res, 202, { queued: true });
           }
-          if (!match[2] && method === "PUT")
+          if (!match[2] && method === "PUT") {
+            const input = json(await body(req));
+            if (!Number.isSafeInteger(input.revision) || input.revision < 1)
+              throw new HttpError(
+                428,
+                "The current site revision is required; reload before saving",
+              );
             return send(res, 200, {
-              id: store.save(json(await body(req)), id),
+              id: store.save(input, id),
             });
+          }
           if (!match[2] && method === "DELETE") {
             store.remove(id);
             return send(res, 200, { deleted: true });
@@ -413,20 +616,40 @@ export function createApp(options = {}) {
       }
       throw new HttpError(404, "Not found");
     } catch (error) {
+      const detail = diagnostic(error, stage, requestId);
+      log(
+        JSON.stringify({
+          event: "request_failed",
+          status: error.status ?? 500,
+          ...detail,
+        }),
+      );
       if (!res.headersSent)
         send(res, error.status ?? (error.code === "ENOENT" ? 404 : 500), {
-          error: error.status ? error.message : "Request failed",
+          error: error.status
+            ? error.message
+            : `Request failed (${detail.category} at ${detail.stage}; request ${requestId})`,
+          ...detail,
         });
       else res.end();
     }
   });
   server.requestTimeout = 30000;
   server.headersTimeout = 10000;
-  function dispatch() {
-    if (!busy && !stopped) active = tick();
-    return active;
-  }
   if (options.dispatch !== false) {
+    const dispatch = () => {
+      if (dataOperation === "recovery") return;
+      if (recovery.pending()) {
+        reconciliation = recovery.reconcile().catch((error) =>
+          log(
+            JSON.stringify({
+              event: "recovery_rollback_pending",
+              ...diagnostic(error, "startup_recovery"),
+            }),
+          ),
+        );
+      } else dispatcher.fill();
+    };
     timer = setInterval(dispatch, 2000);
     timer.unref();
     dispatch();
@@ -434,12 +657,12 @@ export function createApp(options = {}) {
   return {
     server,
     store,
-    tick: dispatch,
+    tick: () => dispatcher.tick(),
     adminPath: store.adminPath,
     async close() {
-      stopped = true;
       clearInterval(timer);
-      await active;
+      await reconciliation;
+      await dispatcher.close();
       await new Promise((resolve) => server.close(resolve));
       store.close();
     },

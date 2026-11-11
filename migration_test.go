@@ -16,7 +16,7 @@ func TestLegacyCredentialMigrationPreservesData(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	legacy := strings.Replace(schema, "  access_token TEXT NOT NULL DEFAULT '',\n  user_id INTEGER NOT NULL DEFAULT 0,\n", "", 1)
+	legacy := strings.Replace(schema+probeCleanupSchema, "  access_token TEXT NOT NULL DEFAULT '',\n  user_id INTEGER NOT NULL DEFAULT 0,\n", "", 1)
 	legacy = strings.Replace(legacy, "UNIQUE(url, type, account, user_id)", "UNIQUE(url, type, account)", 1)
 	if _, err = db.Exec(legacy + `
 INSERT INTO credentials(id,name,url,type,account,password) VALUES(7,'Legacy','https://old.invalid','newapi','u','p');
@@ -78,6 +78,9 @@ DELETE FROM credentials WHERE id=99;`); err != nil {
 	all := importCredentials(t, store, Credential{URL: "https://old.invalid", Type: "newapi", AccessToken: "new-token", UserID: 8})
 	if len(all) != 2 || all[1].ID <= 99 {
 		t.Fatal("migration reused a deleted ID")
+	}
+	if err := store.release(ctx, 7, "owner"); err != nil {
+		t.Fatal(err)
 	}
 	if err := store.Remove(ctx, 7); err != nil {
 		t.Fatal(err)

@@ -41,7 +41,7 @@ function fixture(t) {
       url: config.url,
       type: config.type,
       checked_at: new Date().toISOString(),
-      catalog: snapshot,
+      ...(snapshot === undefined ? {} : { catalog: snapshot }),
       ...extra,
     };
     store.accept(result);
@@ -49,7 +49,7 @@ function fixture(t) {
   }
   return { store, id, dir, publish };
 }
-test("compare ignores order, model changes and floating-point noise; tracks zero, dynamic and unknown rates", () => {
+test("compare ignores order and floating-point noise; tracks zero, dynamic and unknown rates", () => {
   const before = catalog(
     group("zero", 0),
     group("stable", 0.3),
@@ -61,7 +61,7 @@ test("compare ignores order, model changes and floating-point noise; tracks zero
       before,
       catalog(
         group("auto", null, { multiplier_source: "auto" }),
-        group("stable", 0.1 + 0.2, { models: ["new-model"] }),
+        group("stable", 0.1 + 0.2),
         group("zero", 0),
       ),
     ),
@@ -86,7 +86,7 @@ test("compare ignores order, model changes and floating-point noise; tracks zero
   assert.equal(changes[3].after, 0);
   assert.equal(compareCatalogs(before, catalog()).length, 3);
 });
-test("successful snapshots create durable, idempotent group/multiplier notices; failures never erase the baseline", (t) => {
+test("successful snapshots create durable, idempotent notices; failures never erase the baseline", (t) => {
   const f = fixture(t);
   f.publish(catalog(group("default", 1), group("old", 2)));
   assert.equal(f.store.changes().length, 0);
@@ -108,7 +108,11 @@ test("successful snapshots create durable, idempotent group/multiplier notices; 
       group("default", 0.5, { models: ["fresh-model"] }),
     ),
   );
-  assert.equal(f.store.changes().length, 1);
+  assert.equal(f.store.changes().length, 2);
+  assert.equal(f.store.changes()[0].details[0].kind, "models");
+  assert.deepEqual(f.store.changes()[0].details[0].models_added, [
+    "fresh-model",
+  ]);
   const json = JSON.stringify(f.store.changes());
   for (const secret of [
     "private-account",
@@ -117,6 +121,157 @@ test("successful snapshots create durable, idempotent group/multiplier notices; 
     "password",
   ])
     assert.ok(!json.includes(secret));
+});
+test("model notices compare known sets, sort their deltas and ignore discovery transitions", () => {
+  const before = catalog(group("g", 1, { models: ["keep", "old-b", "old-a"] })),
+    current = catalog(
+      group("g", 1, { models: ["new-b", "keep", "new-a", "new-a"] }),
+    ),
+    [change] = compareCatalogs(before, current);
+  assert.equal(change.kind, "models");
+  assert.deepEqual(change.models_added, ["new-a", "new-b"]);
+  assert.deepEqual(change.models_removed, ["old-a", "old-b"]);
+  assert.deepEqual(
+    compareCatalogs(
+      before,
+      catalog(group("g", 1, { models: ["old-a", "keep", "old-b"] })),
+    ),
+    [],
+  );
+  for (const modelsKnown of [false, undefined]) {
+    assert.deepEqual(
+      compareCatalogs(
+        catalog(group("g", 1, { models_known: modelsKnown })),
+        current,
+      ),
+      [],
+    );
+    assert.deepEqual(
+      compareCatalogs(
+        before,
+        catalog(group("g", 1, { models_known: modelsKnown })),
+      ),
+      [],
+    );
+  }
+});
+test("price notices retain bounded public facts and compare modes, expressions and every numeric field", () => {
+  const price = {
+      model: "model",
+      mode: "tokens",
+      input: 1,
+      output: 2,
+      request: null,
+      cache_read: 0.1,
+      cache_write: 0.2,
+      expression: "",
+    },
+    before = catalog(group("g", 1, { prices: [price] }));
+  for (const update of [
+    { input: 3 },
+    { output: 4 },
+    { request: 0 },
+    { cache_read: 0 },
+    { cache_write: 0.3 },
+    { mode: "dynamic" },
+    { expression: "input * 2" },
+  ]) {
+    const [change] = compareCatalogs(
+      before,
+      catalog(
+        group("g", 1, {
+          prices: [{ ...price, ...update, password: "private-password" }],
+        }),
+      ),
+    );
+    assert.equal(change.kind, "prices");
+    assert.equal(change.price_changes[0].model, "model");
+    assert.equal(change.price_changes[0].before.input, 1);
+    assert.deepEqual(change.price_changes[0].after, { ...price, ...update });
+    assert.ok(!JSON.stringify(change).includes("password"));
+  }
+  assert.deepEqual(
+    compareCatalogs(
+      before,
+      catalog(
+        group("g", 1, {
+          prices: [{ ...price, input: 1 + 1e-12, expression: "  " }],
+        }),
+      ),
+    ),
+    [],
+  );
+  assert.equal(
+    compareCatalogs(
+      catalog(group("g", 1, { prices: [{ ...price, input: 1e-20 }] })),
+      catalog(group("g", 1, { prices: [{ ...price, input: 2e-20 }] })),
+    )[0].kind,
+    "prices",
+  );
+});
+test("new and missing model prices are explicit, deterministic deltas without redundant group notices", () => {
+  const old = { model: "old", mode: "request", request: 0.5 },
+    added = { model: "added", mode: "dynamic", expression: "tokens * rate" },
+    previous = catalog(group("g", 1, { prices: [old] })),
+    current = catalog(group("g", 1, { prices: [added] })),
+    [change] = compareCatalogs(previous, current);
+  assert.deepEqual(
+    change.price_changes.map(({ model }) => model),
+    ["added", "old"],
+  );
+  assert.equal(change.price_changes[0].before, null);
+  assert.equal(change.price_changes[1].after, null);
+  assert.deepEqual(
+    compareCatalogs(
+      catalog(group("g", 1, { prices: [old, added] })),
+      catalog(
+        group("g", 1, {
+          prices: [{ ...added, expression: " tokens * rate " }, old],
+        }),
+      ),
+    ),
+    [],
+  );
+  assert.deepEqual(
+    compareCatalogs(catalog(), current).map(({ kind }) => kind),
+    ["added"],
+  );
+  assert.deepEqual(
+    compareCatalogs(previous, catalog()).map(({ kind }) => kind),
+    ["removed"],
+  );
+});
+test("model and price changes persist together and redelivered callbacks create no duplicate", (t) => {
+  const f = fixture(t),
+    before = catalog(
+      group("g", 1, {
+        models: ["old"],
+        prices: [{ model: "old", mode: "tokens", input: 1 }],
+      }),
+    ),
+    after = catalog(
+      group("g", 2, {
+        models: ["new"],
+        prices: [{ model: "new", mode: "dynamic", expression: "input * 2" }],
+      }),
+    );
+  f.publish(before);
+  f.publish(undefined, { error: "temporary failure" });
+  const result = f.publish(after);
+  f.store.accept(result);
+  assert.equal(f.store.changes().length, 1);
+  assert.deepEqual(
+    f.store.changes()[0].details.map(({ kind }) => kind),
+    ["multiplier", "models", "prices"],
+  );
+  const restored = new Store(join(f.dir, "web.db"));
+  try {
+    assert.deepEqual(restored.changes(), f.store.changes());
+  } finally {
+    restored.close();
+  }
+  f.publish(after);
+  assert.equal(f.store.changes().length, 1);
 });
 test("manual changes, monitoring toggle, hide, withdraw, restore, and deletion", (t) => {
   const f = fixture(t);

@@ -6,6 +6,7 @@ import newapiIcon from "./assets/newapi.png";
 import sub2apiIcon from "./assets/sub2api.svg";
 import { groupFamilies, minimumRate, type GroupFamily } from "./groups";
 import { platformPaths } from "./platform-paths";
+import { cachedIconSources, type IconSite } from "./site-icon";
 import type { Group, Site } from "./types";
 
 export const typeNames = {
@@ -33,16 +34,13 @@ export function Status({ site }: { site: Site }) {
     </span>
   );
 }
-export function SiteIcon({
-  site,
-}: {
-  site: Pick<Site, "id" | "url" | "type" | "enabled">;
-}) {
+export function SiteIcon({ site }: { site: IconSite & Pick<Site, "type"> }) {
   const [sources, setSources] = useState<string[]>([]);
   const [index, setIndex] = useState(0);
   const fallback = site.type === "sub2api" ? sub2apiIcon : newapiIcon;
   useEffect(() => {
     let active = true;
+    const controller = new AbortController();
     setSources([]);
     setIndex(0);
     if (site.enabled)
@@ -51,22 +49,27 @@ export function SiteIcon({
         "GET",
         undefined,
         30000,
+        { signal: controller.signal },
       )
         .then((data) => {
           if (active) {
-            setSources(
-              data.icons.filter(
-                (source) => source === `/api/sites/${site.id}/icon/image`,
-              ),
-            );
+            setSources(cachedIconSources(site, data.icons));
             setIndex(0);
           }
         })
         .catch(() => {});
     return () => {
       active = false;
+      controller.abort();
     };
-  }, [site.id, site.url, site.enabled]);
+  }, [
+    site.id,
+    site.url,
+    site.type,
+    site.enabled,
+    site.icon,
+    site.icon_revision,
+  ]);
   return (
     <span className={`site-icon icon-${site.type}`}>
       <img

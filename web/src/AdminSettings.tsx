@@ -16,6 +16,7 @@ import {
   type ImportMode,
 } from "./backup-api";
 import { Select } from "./ui";
+import { RecoverySettings } from "./RecoverySettings";
 import "./admin-settings.css";
 
 type Props = {
@@ -103,7 +104,7 @@ function SyncForm({
         </div>
       </div>
       <p className="field-help">
-        最短 1 分钟，最长 365 天；串行同步不承诺精确秒级刷新。
+        最短 1 分钟，最长 365 天；同步排队不承诺精确秒级刷新。
       </p>
       <Button type="submit" variant="secondary" isDisabled={busy}>
         保存同步周期
@@ -184,6 +185,7 @@ export function AdminSettings({
     [mode, setMode] = useState<ImportMode>("merge");
   const [file, setFile] = useState<File | null>(null),
     [confirmed, setConfirmed] = useState(false);
+  const [includeCache, setIncludeCache] = useState(true);
   const fileInput = useRef<HTMLInputElement>(null);
   async function run(fn: () => Promise<string>) {
     if (busy) return;
@@ -245,7 +247,7 @@ export function AdminSettings({
                 </div>
                 <p className="field-help">
                   包含全部站点、账号密码 /
-                  面板令牌、最后成功快照、动态记录和同步周期。不包含管理会话与旧同步任务。
+                  面板令牌、最后成功快照、动态记录和同步周期。用于目录迁移；完整服务恢复请使用下方的完整恢复包。
                 </p>
                 <div className="select-field">
                   <label>备份格式</label>
@@ -266,13 +268,28 @@ export function AdminSettings({
                 <p className="backup-sensitive">
                   备份包含明文凭据，请妥善保管，不要公开分享或提交到 Git。
                 </p>
+                <label className="backup-confirm">
+                  <input
+                    type="checkbox"
+                    checked={includeCache}
+                    disabled={busy}
+                    onChange={(event) => setIncludeCache(event.target.checked)}
+                  />
+                  <span>包括图标缓存（文件过大时自动省略）</span>
+                </label>
                 <Button
                   variant="secondary"
                   isDisabled={busy}
                   onPress={() =>
                     void run(async () => {
-                      await downloadBackup(base, format);
-                      return "备份已生成并开始下载，请妥善保管。";
+                      const result = await downloadBackup(
+                        base,
+                        format,
+                        includeCache,
+                      );
+                      return result.cacheOmitted
+                        ? "备份已开始下载；已省略可重新获取的图标缓存，站点配置和凭据完整保留。"
+                        : "备份已生成并开始下载，请妥善保管。";
                     })
                   }
                 >
@@ -374,6 +391,7 @@ export function AdminSettings({
                   </Button>
                 </div>
               </section>
+              <RecoverySettings base={base} busy={busy} run={run} />
               {error && (
                 <p className="notice error" role="alert">
                   {error}

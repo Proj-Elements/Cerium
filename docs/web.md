@@ -30,14 +30,12 @@ docker compose logs sync
 | sync | sync-data -> /data | 凭据、AT/RT/Cookies、快照、任务结果与站点映射 |
 | solver（可选） | 无持久卷 | 独立 Chromium / Xvfb，Turnstile 临时任务与结果仅驻留内存 |
 
-`sync` 共享 `web` 的网络命名空间，但文件系统和用户独立。Node 向
-`http://127.0.0.1:8091/v1/sync` 发送任务，Go 向
-`http://127.0.0.1:3000/api/webhooks/sync` 回传结果。
-这不是在同一容器中运行两种服务，也不需要 Docker Desktop 开启 host networking。
-若重建 web，请使用 `docker compose up -d` 一起协调两个服务，不要单独移除网络命名空间拥有者。
-启用本地 solver 的部署还须在 `.env` 设置 `COMPOSE_PROFILES=solver`，让每次部署都协调第三个容器。
-仅首次使用 `--profile solver` 不会自动为后续命令启用该 profile；遗漏时 solver 的自身健康检查
-仍可能通过，但它留在旧 web 的网络中，当前 sync 访问 127.0.0.1:8092 会被拒绝。
+三个服务使用独立网络命名空间，通过 Compose 项目私有网络中的服务名通信。Node 向
+`http://sync:8091/v1/sync` 发送任务，Go 向
+`http://web:3000/api/webhooks/sync` 回传结果。Go 与可选 Solver 仅在容器网络监听，
+不发布宿主机端口；重建 Web 不会把 Sync 或 Solver 留在旧网络命名空间中。
+启用本地 solver 时，可在 `.env` 设置 `COMPOSE_PROFILES=solver`，让后续部署自动包含第三个服务。
+采用外部 Solver 时只需设置对应 URL。
 
 | 环境变量 | 默认/说明 |
 | --- | --- |
@@ -46,12 +44,14 @@ docker compose logs sync
 | PUBLIC_ORIGIN | 默认留空，按请求 Host 校验；反向代理时设置外部 origin |
 | WEB_PORT | 宿主机端口，默认 3000；若显式配置了 PUBLIC_ORIGIN，需同步修改其中端口 |
 | COOKIE_SECURE | 默认 false；HTTPS 部署设为 true |
-| SYNC_INTERVAL_SECONDS | 首次初始化默认 900，范围 60 秒至 365 天；之后以后台保存的周期为准，重启保留。小规模站点串行同步，不承诺精确秒级刷新 |
-| CERIUM_TURNSTILE_SOLVER_URL | Compose 默认 `http://127.0.0.1:8092`；兼容 Theyka 的 `/turnstile`、`/result` 协议 |
+| SYNC_INTERVAL_SECONDS | 首次初始化默认 900，范围 60 秒至 365 天；之后以后台保存的周期为准，重启保留。不承诺精确秒级刷新 |
+| CERIUM_DISPATCH_CONCURRENCY | Node 不同站点并发上限，默认 4，范围 1–16 |
+| CERIUM_BRIDGE_CONCURRENCY | Go 不同站点并发上限，默认 4，范围 1–32；同一站点、任务仍互斥 |
+| CERIUM_TURNSTILE_SOLVER_URL | Compose 默认 `http://solver:8092`；原生部署可设 `http://127.0.0.1:8092`；兼容 Theyka 的 `/turnstile`、`/result` 协议 |
 | CERIUM_MODEL_PROBES_PER_RUN | 默认 4，范围 1-20；每轮允许新建 Key 探测的分组数，不是重复探测次数 |
 | CERIUM_OUTBOUND_PROXY_URL | 可选 HTTP(S) 出口代理，供 Go 上游请求和 Node 图标发现使用；本地桥接、回调与 solver 不走此代理。宿主机代理示例：`http://host.docker.internal:7890`，需监听 Docker 可达地址 |
 | CERIUM_ICON_ALLOW_FAKE_IP | 默认 false；仅在可信 TUN 代理确实路由 `198.18.0.0/15` DNS Fake-IP 时设为 true。仅放行域名的该 DNS 结果，不放行字面量私网 IP、元数据或其他私网范围 |
-| CERIUM_BACKEND_URL | Node 使用；原生默认 `http://127.0.0.1:8091` |
+| CERIUM_BACKEND_URL | Node 使用；原生默认 `http://127.0.0.1:8091`，Compose 使用 `http://sync:8091` |
 | CERIUM_WEBHOOK_URL | Go 使用；包含 `/api/webhooks/sync` 的完整地址 |
 | DATA_DIR / PORT / HOST | Node 默认 web/data、3000、0.0.0.0；Docker DATA_DIR=/app/data |
 
@@ -59,7 +59,7 @@ docker compose logs sync
 
 生产环境用宿主机 Caddy/Nginx 反向代理 `127.0.0.1:3000`，配置 HTTPS，设置实际
 `PUBLIC_ORIGIN=https://your-domain.example` 和 `COOKIE_SECURE=true`。不要公开 Go 桥端口。
-不用共享命名空间的独立容器可改用 Docker 私有网络和服务名；跨主机须使用 HTTPS 或 VPN。
+跨主机部署须使用 HTTPS 或 VPN。
 切勿把 localhost 理解为任意容器的宿主机。
 
 管理密码每次 Node 启动随机生成，仅在日志输出；内存中保留 scrypt 校验值。
@@ -78,7 +78,9 @@ docker compose logs sync
 管理员可配置任意 HTTP(S) 站点，因此管理账号与 Webhook 密钥属于高权限机密。
 前台不返回账号、密码、任务、原始错误、Token 或管理路由。
 
-后台「同步与数据」可以在线导出 JSON / SQLite (.db)，并以合并或替换方式导入 web 业务数据；备份包含明文凭据，不包含独立 Go 数据库与管理会话。操作语义和 API 见 [后台同步配置与数据迁移](admin-data.md)。
+后台「同步与数据」可以在线导出 JSON / SQLite (.db) 业务备份，或导出包含两个数据库的完整恢复包。
+业务备份可以排除图片缓存以减少体积；完整恢复包保留 Go 会话、一次性探测和清理任务。
+这些文件包含明文凭据。容量边界、故障回滚和 API 见 [后台同步配置与数据迁移](admin-data.md)。
 
 完整部署备份时先 `docker compose stop`，备份两个命名卷，再 `docker compose start`。
 不要在写入期间只复制 `.db` 而漏掉 WAL。`docker compose down` 保留卷；不要随意使用 `down -v`。
@@ -87,7 +89,7 @@ docker compose logs sync
 ## Turnstile 与一次性模型探测
 
 `docker compose --profile solver up -d --build` 启用第三个可选容器；Node 和 Go 仍是两个独立容器。
-浏览器镜像体积较大，不需要 Turnstile 时无需启动。Sidecar 只监听共享命名空间的 127.0.0.1:8092，
+浏览器镜像体积较大，不需要 Turnstile 时无需启动。Sidecar 在私有容器网络监听 0.0.0.0:8092，
 没有 RDP、对外端口或凭据卷。它收到的只有站点登录页 URL 和公开 sitekey，不包含账号、密码或 AT/RT。
 接口任务限量，等待最多 90 秒，不重放提交；验证码不写 SQLite、不写日志，成功后仅用于当前一次登录。
 失败会报告到站点状态，不尝试删除上游验证码校验或绕过 MFA。
@@ -108,8 +110,10 @@ Sub2API 不再使用 `/channels/available` 作为模型来源。每个可公开�
 默认每轮最多开始 4 个新分组，以免触发上游创建限制；未处理分组会在后续同步继续。
 改密码或重启不会重置缓存；更换 URL/账号是新的探测身份，删除再添加站点也会产生新身份。
 首次探测不是实时监控，上游今后的模型变更不会自动重新探测，前台明确标注快照日期。
-若更换/删除凭据前还有未完成的远端 Key 清理，应先完成清理；1 天有效期是上游支持时的额外保护，
-不可替代成功删除。探测只读取模型列表，不发起推理、充值或其他付费 API 请求。
+管理员可明确确认后执行「刷新模型列表」，持久任务标记避免传输重试重复刷新；存在活动任务时拒绝重复排队。
+删除或更换凭据会把未完成的远端 Key 清理移入独立队列，保留所需认证、会话及密钥信息，后台继续退避清理。
+某一分组删除失败只阻止该组再次探测，不会阻塞其他组。1 天有效期仅是上游支持时的额外保护，不替代成功删除。
+探测只读取模型列表，不发起推理、充值或其他付费 API 请求。
 
 ## 本地运行
 
@@ -124,17 +128,21 @@ go run ./cmd/cerium serve -db data/bridge.db
 # 终端二
 cd web
 npm ci --ignore-scripts --legacy-peer-deps
-npx -y hpsetup@4.7.4 "$HEROUI_SETUP_TOKEN"
+npm ci --prefix build-tools --ignore-scripts
+node scripts/install-premium.mjs
 npm run build
 export CERIUM_WEBHOOK_SECRET='the-same-generated-secret'
 npm start
 ```
 
-每次干净安装后再次安装 Pro 产物；npm 占位包不含完整组件。
+每次干净安装后再次安装 Pro 产物；npm 占位包不含完整组件。安装器从环境读取
+`HEROUI_SETUP_TOKEN`，校验固定版本和产物摘要，不执行产物脚本或自动补装 peer，避免改写应用锁文件。
+所需 peer 已列入应用依赖，解包工具使用 `build-tools/package-lock.json` 单独锁定。
 若全局 npm `allow-scripts` 配置导致 `EALLOWSCRIPTS`，仅对该命令使用
 `NPM_CONFIG_USERCONFIG=/dev/null`，无需改动个人全局配置。
-`heroui-pro.figlet` override 固定到 1.11.3，规避 GHSA-62ch-8vmq-8xm7；上游修复后可移除。
 前端与构建依赖锁定在 package-lock.json；运行镜像只拷贝 server 与 dist。
+Docker 基础镜像固定内容摘要，Solver 使用固定 Debian 快照和包含传递依赖哈希的 Python 锁文件。
+这些固定输入仍须定期单独评估安全更新，不以浮动重建替代依赖更新。
 
 `npm run dev` 用于公开页面热更新，API 代理到 Node 3000。随机管理入口由 Node 注入模式，
 管理界面的完整验证在 `npm run build && npm start` 的 3000 端口进行。
@@ -146,16 +154,17 @@ npm start
 - 分组 badge 使用与 Sub2API 一致的 OpenAI、Claude、Gemini 平台图标。优先采用上游明确给出的 `platform`；
   没有平台字段时，从模型名称识别，混合分组展示多个图标；没有可识别模型时才参考分组名称，仍无法识别则归为「其他」。
 - 目录与站点详情均支持平台筛选，详情另支持分组名称搜索。右上角的双滑块共用一条轨道，按「不低于 / 不高于」选择包含端点的固定倍率区间，支持鼠标、触摸与键盘操作及重置。
-  平台和倍率必须同时命中同一个分组；启用目录筛选后，卡片显示匹配分组内的最低倍率与数量。区间筛选生效时，动态或未知倍率分组不参与匹配；不限倍率时仍可查看。
+  平台、模型或分组搜索与倍率必须命中同一个分组；启用目录筛选后，卡片显示匹配分组内的最低倍率与数量。站点名称搜索仍可命中该站点，区间筛选生效时动态或未知倍率分组不参与匹配。
+  站点、分组、目录筛选、详情筛选与模型搜索写入 URL，可分享并支持刷新及前进后退。
 - 横屏点击分组后，模型在分组详情左侧的独立卡片展示，两栏独立滚动，切换分组直接更新模型卡片，不向原容器下方追加内容。
   竖屏进入独立模型视图，通过「返回分组」恢复原有筛选；长模型列表可以分批展开并搜索，所有公开模型均可访问。后台分组 badge 可直接打开对应模型卡片。
 - 站点图标独立于目录 sync。首次请求图标时，Node 从首页同源 icon 链接和常见 `favicon.ico` / `favicon.svg` / `favicon.png` / `apple-touch-icon.png` 路径发现候选，限时、限大小且只允许公网地址；逐一检查后选用首个可用图标。
   候选、选中地址和实际图像字节一起持久保存在 web SQLite 中，随 `/app/data` 数据卷保留，并发请求合并为一次抓取。`GET /api/sites/:id/icon` 只返回本站缓存路径，前端通过 `GET /api/sites/:id/icon/image` 读取图像，不直接请求上游资源。单张图片最多 1 MiB，按内容识别图片类型；缓存 SVG 使用限制资源访问与脚本执行的 CSP，隐藏或删除站点后不再公开其缓存。
   后续自动 / 手动 sync、普通编辑和重启都不重新抓取已缓存的图标；修改站点 URL 或显式图标地址才清除旧缓存。旧版本只保存地址的记录在下一次图标请求时优先下载原选中地址，下载失败后尝试普通发现；显式配置的图标只尝试指定地址。成功缓存后，上游临时不可达不影响访客展示。
   首页和全部候选探测各有 10 秒总预算，单个图标和迁移旧地址各最多 5 秒；访客先显示构建附带的默认图标，不因较慢的代理出口阻塞页面。没有可用图片时保存失败时间，15 分钟内不重复请求，之后的下一次图标请求会重试；不会后台定时刷新已打开页面。旧版无时间的失败记录会重新发现一次。浏览器读取本站缓存失败时回退到默认图标，不回源请求远程图标。
-  JSON / SQLite 备份均包含图像缓存，恢复后无需重新下载。JSON 使用可校验的 `favicon_cache: { type, data }`，其中 `data` 为图片的 Base64；SQLite 使用 `favicon_blob` 和 `favicon_type` 列。仍兼容只有地址或没有图标字段的旧备份，导入后按上述规则补齐缓存；所有图标都计入原有 64 MiB 备份大小限制。
-- 管理面板的「分组波动监测」默认开启。首次成功快照只建立基准；之后仅比较两次成功快照的分组 ID 与倍率，记录新增、移除及固定/动态倍率变化。模型列表、分组顺序和浮点舍入误差不会通报；同步失败保留上一成功快照。
-  前台顶部展示最近 7 天未撤下的变动；后台「波动记录」保留最多 30 天或 2000 条，可撤下/恢复单条通报。暂停监测、隐藏站点或删除站点会使其通报不在前台出现；恢复监测不补发暂停期间的变动。所有记录保存在 web SQLite 中，重启不丢失。
+  JSON / SQLite 备份默认包含图像缓存，恢复后无需重新下载，也可显式省略缓存。JSON 使用可校验的 `favicon_cache: { type, data }`，其中 `data` 为图片的 Base64；SQLite 使用 `favicon_blob` 和 `favicon_type` 列。仍兼容只有地址或没有图标字段的旧备份。图像除文件头外还验证完整结构，损坏的持久缓存可以重新发现；图标版本改变会刷新已打开页面。
+- 管理面板的波动监测默认开启。首次成功快照只建立基准；之后比较分组 ID、固定/动态倍率、双方均已知的模型清单，以及公开输入、输出、缓存、按次价格和表达式。数组顺序与浮点舍入噪声不会通报；同步失败保留上一成功快照。
+  前台顶部展示最近 7 天未撤下的变动；后台「波动记录」保留最多 30 天或 2000 条，支持搜索、分页及撤下/恢复。暂停监测、隐藏站点或删除站点会使其通报不在前台出现；恢复监测不补发暂停期间的变动。所有记录保存在 web SQLite 中，重启不丢失。
 - NewAPI 后台可切换「账号密码」或「访问令牌 + 用户 ID」。令牌模式适用于第三方登录：
   填写站点的面板访问令牌（不是模型 API Key）和对应用户 ID，允许粘贴带 `Bearer ` 前缀的值。
   编辑时令牌留空保留原值；令牌不回显，也不会出现在公开 API 中。切换认证方式会清理另一种凭据。
@@ -176,6 +185,7 @@ npm start
   自动分组无单一倍率，不编造固定站点模型价。价格是上游公开基础计费或明确标注的默认参考，不涵盖音频/图像附加项、
   高峰/长上下文等所有可能费用，也不自动折算为人民币实际成本。
 - 充值仅维护 `x CNY = 1 USD` 的站内额度兑换价，不单独设置充值倍率。旧 CNY/USD 配置在保存或导入时按比例归一化，已有支付渠道不会因预设调整丢失。后台默认支付渠道为云猫寄售、链动小铺、站点直充，可在「同步与数据」维护预设并在站点表单多选。
+- 模型比价按完整模型名、输入输出用量或调用次数计算。只有站点公开的固定价格参与可比较费用；人民币结果必须有该站点明确的充值兑换价。缺少兑换价的 USD 站内额度与 CNY 分列，默认参考价、未知和动态报价不参与固定费用排名；结果不覆盖额外费用或服务质量。
 - 目录卡片不显示简介；管理员填写的简介仅在详情标题下展示，未填写时不显示占位或默认简介。
 - `others` 明确标记手动维护。前台时间是最后成功抓取时间，不是页面刷新时间。
 - `models_known=false` 表示没有完整映射；空列表不等于没有任何模型。
@@ -240,8 +250,9 @@ Node -> Go `POST /v1/sync`：
 `operation` 是 `sync` 或 `delete`。仅这一方向包含凭据。
 NewAPI 令牌模式把 `account` / `password` 置空，改为 `"access_token":"configured-panel-token","user_id":123`。
 Go 以 site_id 关联 credential_id；修改 URL/类型/账号/密码/令牌/用户 ID 使旧会话失效，改名称不丢失会话。
-过期配置版本被拒绝，同一 job_id 不允许不同正文。先保存结果再回调，回调失败重送复用结果，
-不再次旋转令牌。SQLite lease 防止重入；结果落盘前进程崩溃的未完成任务可能重新采集。
+过期配置版本被拒绝，同一 job_id 不允许不同正文。先保存结果再回调，临时回调失败重送复用结果，
+不再次旋转令牌。永久字段拒收返回 `callback_rejected` 并使网站任务结束失败；修正上游后可明确重试新任务，
+不再持续重发坏结果。SQLite lease 防止重入；结果落盘前进程崩溃的未完成任务可能重新采集。
 
 Go -> Node `POST /api/webhooks/sync`，在原有 Result 基础上增加任务关联与价格：
 
@@ -264,8 +275,14 @@ Go -> Node `POST /api/webhooks/sync`，在原有 Result 基础上增加任务关
 失败带 `error`，不覆盖成功快照。Node 验证任务、版本、URL、类型和 `scope=public`，只存白名单字段。
 重复回调幂等，已删除站点不会被复活；旧版本回调只确认、不应用。删除站点立即从前台隐藏，
 保留凭据清理任务直到 Go 确认，断网不会丢失意图。连接失败以 5 秒至 15 分钟退避；站点本身
-认证/采集失败在下个周期重试，也可在后台点击「重新同步」。手动操作立即提前退避中的待处理任务，保持相同 job_id 以便安全重送缓存结果；运行中的任务不重放。当前任务状态优先于上一轮失败状态，旧错误诊断和成功快照仍保留。完成/被替代任务与 Go 结果保留最多 30 天，未完成任务不丢弃。
-删除清理 Go 凭据、会话与快照，但不包含密码/Token 的历史完成结果可能保留到 30 天。
+认证/采集失败在下个周期重试，也可在后台点击「重新同步」。手动操作立即提前退避中的待处理任务，保持相同 job_id 以便安全重送缓存结果；运行中的任务不重放，永久失败后的明确重试使用新任务。当前任务状态优先于上一轮失败状态，旧错误诊断和成功快照仍保留。
+Go 单个缓存结果最多 8 MiB，未确认结果总正文最多 64 MiB；已送达或永久拒收后立即去掉正文，过期正文转为摘要记录。
+已送达摘要保留一小时，覆盖签名五分钟窗口；未完成任务摘要保留最多 30 天，超过正文期限不会重新执行同一任务。
+网站历史任务最多保留 30 天；远端 Key 待清理资料独立保留，直到确认完成。
+
+`/healthz` 保留为 HTTP 存活检查。Web `/readyz` 检查数据库、调度进展和同步器；Go `/readyz` 提供数据库、并发容量、回调及可选 Solver 状态；Solver `/readyz` 检查浏览器连接与任务能力。
+管理诊断包含安全的类别、阶段和任务或请求 ID，不回显上游响应正文或凭据。
+`/api/sites` 支持 gzip、ETag 和 304，公开页面合并并发读取、暂停隐藏标签页轮询，并在失败时退避。
 
 原有 CLI `run -webhook` 的无任务结果仍适合自定义 Sink，不能绕过网站的任务匹配校验。
 新增自动 Provider 时实现接口、注册公开 Provider 并调整桥/网站类型白名单；其他回传可实现 Sink。

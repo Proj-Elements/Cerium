@@ -1,0 +1,60 @@
+.catalog-note,
+.admin-note {
+  display: flex;
+  align-items: flex-start;
+  gap: 7px;
+  padding: 14px 0;
+  color: var(--muted);
+  font-size: 11px;
+}
+.catalog-note > svg,
+.admin-note > svg {
+  margin-top: 2px;
+}
+.empty-state {
+  padding: 52px 20px;
+}
+.empty-state__description {
+  max-width: 380px;
+  font-size: 12px;
+  line-height: 1.8;
+}
+.loading {
+  text-align: center;
+  padding: 80px 20px;
+  color: var(--muted);
+}
+.notice {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 12px 16px;
+  border-radius: 10px;
+  font-size: 12px;
+  margin-bottom: 18px;
+  overflow-wrap: anywhere;
+  animation: reveal var(--motion-short) var(--motion-ease) both;
+}
+.notice > span {
+  flex: 1;
+}
+.notice > .button {
+  margin-left: auto;
+  flex-shrink: 0;
+}
+.notice.error {
+  background: var(--danger-soft);
+  color: var(--danger-soft-foreground);
+}
+.notice.success {
+  background: var(--success-soft);
+  color: var(--success-soft-foreground);
+}
+.notice.subtle {
+  background: var(--surface-secondary);
+  color: var(--muted);
+}
+.field-help {
+  font-size: 11px;
+  line-height: 1.8;
+}

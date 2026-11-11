@@ -1,11 +1,6 @@
-import { backup, DatabaseSync } from "node:sqlite";
-import {
-  mkdtempSync,
-  readFileSync,
-  rmSync,
-  statSync,
-  writeFileSync,
-} from "node:fs";
+import { DatabaseSync } from "node:sqlite";
+import { Worker } from "node:worker_threads";
+import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { ICON_LIMIT, iconType } from "./icon-content.mjs";
@@ -21,6 +16,9 @@ import {
 } from "./validation.mjs";
 
 export const BACKUP_LIMIT = 64 << 20;
+export const RECOVERY_LIMIT = 512 << 20;
+let activeWorkers = 0;
+const validatedBackups = new WeakSet();
 const FORMAT = "cerium-web-backup";
 const fail = (message) => {
   throw new HttpError(400, message);
@@ -61,8 +59,11 @@ function iconCache(value, state) {
     fail("Invalid cached favicon image");
   return { type: value.type, data: value.data };
 }
-export function siteIdentity(config) {
-  return config.type === "others"
+export function siteIdentity(config, error) {
+  return config.type === "others" ||
+    (config.enabled === false &&
+      typeof error === "string" &&
+      error.startsWith("duplicate_identity:"))
     ? null
     : JSON.stringify([
         config.url,
@@ -89,11 +90,7 @@ export function validateBackup(input) {
     const id = uuid(entry.id);
     if (ids.has(id)) fail("Duplicate backup site ID");
     ids.add(id);
-    if (
-      !Number.isSafeInteger(entry.revision) ||
-      entry.revision < 1 ||
-      entry.revision >= Number.MAX_SAFE_INTEGER
-    )
+    if (!Number.isSafeInteger(entry.revision) || entry.revision < 1)
       fail("Invalid backup site revision");
     if (
       entry.config.enabled != null &&
@@ -101,7 +98,7 @@ export function validateBackup(input) {
     )
       fail("Invalid backup site visibility");
     const config = site(entry.config),
-      identity = siteIdentity(config);
+      identity = siteIdentity(config, entry.error);
     if (identity !== null && identities.has(identity))
       fail("Duplicate backup site identity");
     if (identity !== null) identities.add(identity);
@@ -149,7 +146,7 @@ export function validateBackup(input) {
       typeof entry.dismissed !== "boolean" ||
       !Array.isArray(entry.details) ||
       !entry.details.length ||
-      entry.details.length > 1000
+      entry.details.length > 2000
     )
       fail("Invalid backup change details");
     const checkedAt = timestamp(entry.checked_at, false),
@@ -160,15 +157,18 @@ export function validateBackup(input) {
     const details = entry.details.map((detail) => {
       if (
         !object(detail) ||
-        !["added", "removed", "multiplier"].includes(detail.kind) ||
+        !["added", "removed", "multiplier", "models", "prices"].includes(
+          detail.kind,
+        ) ||
         typeof detail.before_dynamic !== "boolean" ||
         typeof detail.after_dynamic !== "boolean"
       )
         fail("Invalid group change");
       const groupId = text(detail.group_id, 200, true);
-      if (groupIds.has(groupId)) fail("Duplicate group change");
-      groupIds.add(groupId);
-      return {
+      const detailKey = `${groupId}:${detail.kind}`;
+      if (groupIds.has(detailKey)) fail("Duplicate group change");
+      groupIds.add(detailKey);
+      const normalized = {
         kind: detail.kind,
         group_id: groupId,
         name: text(detail.name, 200, true),
@@ -177,6 +177,59 @@ export function validateBackup(input) {
         before_dynamic: detail.before_dynamic,
         after_dynamic: detail.after_dynamic,
       };
+      if (detail.kind === "models") {
+        const names = (value) => {
+          if (!Array.isArray(value) || value.length > 10000)
+            fail("Invalid model changes");
+          const models = value.map((model) => text(model, 300, true));
+          if (new Set(models).size !== models.length)
+            fail("Duplicate changed model");
+          return models;
+        };
+        normalized.models_added = names(detail.models_added);
+        normalized.models_removed = names(detail.models_removed);
+        if (
+          !normalized.models_added.length &&
+          !normalized.models_removed.length
+        )
+          fail("Expected changed models");
+        if (
+          normalized.models_added.some((model) =>
+            normalized.models_removed.includes(model),
+          )
+        )
+          fail("Model cannot be both added and removed");
+      }
+      if (detail.kind === "prices") {
+        if (
+          !Array.isArray(detail.price_changes) ||
+          !detail.price_changes.length ||
+          detail.price_changes.length > 20000
+        )
+          fail("Invalid price changes");
+        const models = new Set();
+        normalized.price_changes = detail.price_changes.map((change) => {
+          if (!object(change)) fail("Invalid price change");
+          const model = text(change.model, 300, true);
+          if (models.has(model)) fail("Duplicate changed model price");
+          models.add(model);
+          const price = (value) => {
+            if (value == null) return null;
+            if (!object(value) || value.model !== model)
+              fail("Invalid changed model price");
+            return catalog({
+              scope: "public",
+              groups: [{ id: "price", name: "Price", prices: [value] }],
+            }).groups[0].prices[0];
+          };
+          const before = price(change.before),
+            after = price(change.after);
+          if (before === null && after === null)
+            fail("Expected changed model price");
+          return { model, before, after };
+        });
+      }
+      return normalized;
     });
     return {
       id,
@@ -187,6 +240,14 @@ export function validateBackup(input) {
       dismissed: entry.dismissed,
     };
   });
+  const policy = input.cache_policy;
+  if (
+    policy !== undefined &&
+    (!object(policy) ||
+      policy.favicon_cache !== "omitted" ||
+      !["requested", "size_limit"].includes(policy.reason))
+  )
+    fail("Invalid backup cache policy");
   return {
     format: FORMAT,
     version: 1,
@@ -199,6 +260,7 @@ export function validateBackup(input) {
     },
     sites,
     changes,
+    ...(policy === undefined ? {} : { cache_policy: { ...policy } }),
   };
 }
 export function backupFormat(value) {
@@ -206,40 +268,81 @@ export function backupFormat(value) {
     fail("Backup format must be json or sqlite");
   return value;
 }
-export async function serializeBackup(store, format) {
-  backupFormat(format);
-  if (format === "json") {
-    const bytes = Buffer.from(JSON.stringify(store.exportData(), null, 2));
-    if (bytes.length > BACKUP_LIMIT)
-      throw new HttpError(413, "Backup exceeds the 64 MiB limit");
-    return bytes;
-  }
-  const dir = mkdtempSync(join(tmpdir(), "cerium-export-")),
-    path = join(dir, "backup.db");
-  try {
-    writeFileSync(path, "", { mode: 0o600, flag: "wx" });
-    // The SQLite backup API includes committed WAL data without copying a live .db file.
-    await backup(store.db, path);
-    const db = new DatabaseSync(path);
+function workerTask(operation, input) {
+  if (activeWorkers >= 1)
+    throw new HttpError(503, "Backup processing is busy; try again shortly");
+  activeWorkers++;
+  return new Promise((resolve, reject) => {
+    let settled = false;
+    const finish = (error, value) => {
+      if (settled) return;
+      settled = true;
+      activeWorkers--;
+      if (error) reject(error);
+      else resolve(value);
+    };
+    let worker;
     try {
-      db.exec(
-        "PRAGMA journal_mode=DELETE; DELETE FROM jobs; DELETE FROM settings WHERE key NOT IN ('sync_interval_seconds','payment_presets');",
-      );
-      const insert = db.prepare("INSERT INTO settings(key,value) VALUES(?,?)");
-      insert.run("backup_format", FORMAT);
-      insert.run("backup_version", "1");
-      insert.run("backup_exported_at", new Date().toISOString());
-      // Remove retired task bodies and the admin route from free-list pages as well.
-      db.exec("VACUUM");
-    } finally {
-      db.close();
+      worker = new Worker(new URL("./backup-worker.mjs", import.meta.url), {
+        workerData: { operation, ...input },
+      });
+    } catch (error) {
+      finish(error);
+      return;
     }
-    if (statSync(path).size > BACKUP_LIMIT)
-      throw new HttpError(413, "Backup exceeds the 64 MiB limit");
-    return readFileSync(path);
-  } finally {
-    rmSync(dir, { recursive: true, force: true });
-  }
+    worker.once("message", (response) => {
+      if (response.error)
+        finish(
+          new HttpError(response.error.status ?? 500, response.error.message),
+        );
+      else if (response.bytes) {
+        const bytes = Buffer.from(
+          response.bytes.buffer,
+          response.bytes.byteOffset,
+          response.bytes.byteLength,
+        );
+        bytes.cacheOmitted = response.cacheOmitted === true;
+        finish(null, bytes);
+      } else finish(null, response.data);
+    });
+    worker.once("error", (error) => finish(error));
+    worker.once("exit", (code) => {
+      if (!settled)
+        finish(new Error(`Backup worker exited before completing (${code})`));
+    });
+  });
+}
+export async function serializeBackup(store, format, options = {}) {
+  backupFormat(format);
+  const cache = options.cache ?? "include";
+  if (!["include", "omit"].includes(cache))
+    fail("Backup cache policy must be include or omit");
+  return workerTask("serialize", {
+    path: store.path ?? store.db.location(),
+    format,
+    cache,
+  });
+}
+export async function parseBackupAsync(bytes, format, defaultInterval = 900) {
+  backupFormat(format);
+  if (bytes.length > BACKUP_LIMIT)
+    throw new HttpError(413, "Backup exceeds the 64 MiB limit");
+  const data = await workerTask("parse", { bytes, format, defaultInterval });
+  validatedBackups.add(data);
+  return data;
+}
+export function isValidatedBackup(input) {
+  return validatedBackups.has(input);
+}
+export async function exportRecoveryDatabase(store) {
+  return workerTask("recovery-export", {
+    path: store.path ?? store.db.location(),
+  });
+}
+export async function parseRecoveryDatabase(bytes) {
+  if (bytes.length > RECOVERY_LIMIT)
+    throw new HttpError(413, "Recovery database exceeds the 512 MiB limit");
+  return workerTask("recovery-parse", { bytes });
 }
 export function parseBackup(bytes, format, defaultInterval = 900) {
   backupFormat(format);
@@ -285,68 +388,7 @@ export function parseBackup(bytes, format, defaultInterval = 900) {
       fail("Expected a Cerium web SQLite database with ordinary tables");
     if (Object.values(db.prepare("PRAGMA quick_check(1)").get())[0] !== "ok")
       fail("SQLite backup is corrupt");
-    const settings = Object.fromEntries(
-      db
-        .prepare(
-          "SELECT key,value FROM settings WHERE key IN ('sync_interval_seconds','payment_presets','backup_format','backup_version','backup_exported_at') LIMIT 5",
-        )
-        .all()
-        .map((row) => [row.key, row.value]),
-    );
-    const columns = new Set(
-      db
-        .prepare("PRAGMA table_info(sites)")
-        .all()
-        .map((column) => column.name),
-    );
-    const hasFavicon = columns.has("favicon"),
-      hasIconCache = columns.has("favicon_blob") && columns.has("favicon_type");
-    return validateBackup({
-      format: settings.backup_format ?? FORMAT,
-      version: Number(settings.backup_version ?? 1),
-      exported_at: settings.backup_exported_at ?? new Date().toISOString(),
-      settings: {
-        sync_interval_seconds: Number(
-          settings.sync_interval_seconds ?? defaultInterval,
-        ),
-        ...(settings.payment_presets !== undefined
-          ? { payment_presets: JSON.parse(settings.payment_presets) }
-          : {}),
-      },
-      sites: db
-        .prepare(
-          `SELECT id,revision,config,snapshot,fetched_at,last_checked,error,warnings,${hasFavicon ? "favicon" : "NULL AS favicon"},${hasIconCache ? "favicon_blob,favicon_type" : "NULL AS favicon_blob,NULL AS favicon_type"} FROM sites ORDER BY rowid LIMIT 201`,
-        )
-        .all()
-        .map((row) => ({
-          ...row,
-          config: JSON.parse(row.config),
-          snapshot: row.snapshot ? JSON.parse(row.snapshot) : null,
-          warnings: JSON.parse(row.warnings || "[]"),
-          favicon: row.favicon == null ? null : JSON.parse(row.favicon),
-          favicon_cache:
-            row.favicon_blob == null
-              ? null
-              : {
-                  type: row.favicon_type,
-                  data: Buffer.from(row.favicon_blob).toString("base64"),
-                },
-        })),
-      changes: db
-        .prepare(
-          "SELECT id,site_id,checked_at,previous_checked_at,details,dismissed FROM catalog_changes ORDER BY checked_at,rowid LIMIT 2001",
-        )
-        .all()
-        .map((row) => {
-          if (![0, 1].includes(row.dismissed))
-            fail("Invalid change visibility");
-          return {
-            ...row,
-            details: JSON.parse(row.details),
-            dismissed: Boolean(row.dismissed),
-          };
-        }),
-    });
+    return validateBackup(readDatabaseData(db, { defaultInterval }));
   } catch (error) {
     if (error instanceof HttpError) throw error;
     fail("Invalid or incompatible Cerium web SQLite backup");
@@ -354,4 +396,84 @@ export function parseBackup(bytes, format, defaultInterval = 900) {
     db?.close();
     rmSync(dir, { recursive: true, force: true });
   }
+}
+
+export function readDatabaseData(
+  db,
+  { defaultInterval = 900, cache = "include" } = {},
+) {
+  const settings = Object.fromEntries(
+    db
+      .prepare("SELECT key,value FROM settings")
+      .all()
+      .map((row) => [row.key, row.value]),
+  );
+  const columns = new Set(
+    db
+      .prepare("PRAGMA table_info(sites)")
+      .all()
+      .map((column) => column.name),
+  );
+  const hasFavicon = columns.has("favicon"),
+    hasIconCache =
+      cache === "include" &&
+      columns.has("favicon_blob") &&
+      columns.has("favicon_type");
+  return {
+    format: settings.backup_format ?? FORMAT,
+    version: Number(settings.backup_version ?? 1),
+    exported_at: settings.backup_exported_at ?? new Date().toISOString(),
+    settings: {
+      sync_interval_seconds: Number(
+        settings.sync_interval_seconds ?? defaultInterval,
+      ),
+      ...(settings.payment_presets !== undefined
+        ? { payment_presets: JSON.parse(settings.payment_presets) }
+        : {}),
+    },
+    sites: db
+      .prepare(
+        `SELECT id,revision,config,snapshot,fetched_at,last_checked,error,warnings,${hasFavicon ? "favicon" : "NULL AS favicon"},${hasIconCache ? "favicon_blob,favicon_type" : "NULL AS favicon_blob,NULL AS favicon_type"} FROM sites ORDER BY rowid LIMIT 201`,
+      )
+      .all()
+      .map((row) => ({
+        id: row.id,
+        revision: row.revision,
+        config: JSON.parse(row.config),
+        snapshot: row.snapshot ? JSON.parse(row.snapshot) : null,
+        fetched_at: row.fetched_at,
+        last_checked: row.last_checked,
+        error: row.error,
+        warnings: JSON.parse(row.warnings || "[]"),
+        favicon: row.favicon == null ? null : JSON.parse(row.favicon),
+        favicon_cache:
+          row.favicon_blob == null
+            ? null
+            : {
+                type: row.favicon_type,
+                data: Buffer.from(row.favicon_blob).toString("base64"),
+              },
+      })),
+    changes: db
+      .prepare(
+        "SELECT id,site_id,checked_at,previous_checked_at,details,dismissed FROM catalog_changes ORDER BY checked_at,rowid LIMIT 2001",
+      )
+      .all()
+      .map((row) => {
+        if (![0, 1].includes(row.dismissed)) fail("Invalid change visibility");
+        return {
+          ...row,
+          details: JSON.parse(row.details),
+          dismissed: Boolean(row.dismissed),
+        };
+      }),
+    ...(settings.backup_icon_cache === "omitted"
+      ? {
+          cache_policy: {
+            favicon_cache: "omitted",
+            reason: settings.backup_icon_cache_reason ?? "requested",
+          },
+        }
+      : {}),
+  };
 }

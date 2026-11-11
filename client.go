@@ -15,6 +15,8 @@ import (
 	"strings"
 	"syscall"
 	"time"
+
+	"cerium/contracts"
 )
 
 const maxResponseBytes = 8 << 20
@@ -60,15 +62,11 @@ func authRejected(err error) bool {
 }
 
 func parseBaseURL(raw string) (*url.URL, error) {
-	u, err := url.Parse(strings.TrimSpace(raw))
-	if err != nil || u.Hostname() == "" || (u.Scheme != "https" && u.Scheme != "http") ||
-		u.User != nil || u.RawQuery != "" || u.ForceQuery || u.Fragment != "" || u.Opaque != "" {
+	canonical, err := contracts.CanonicalSiteURL(raw)
+	if err != nil {
 		return nil, errors.New("url must be an http(s) site URL without user info, query, or fragment")
 	}
-	u.Host = strings.ToLower(u.Host)
-	u.Path = strings.TrimRight(u.Path, "/")
-	u.RawPath = ""
-	return u, nil
+	return url.Parse(canonical)
 }
 
 func newAPIClient(raw string, timeout time.Duration) (*apiClient, error) {
@@ -148,6 +146,9 @@ func (c *apiClient) rawRequest(ctx context.Context, s *Session, method, endpoint
 func (c *apiClient) rawOnce(ctx context.Context, s *Session, method, endpoint string, body any, opts requestOptions) ([]byte, int, error) {
 	u := *c.base
 	u.Path += endpoint
+	if u.RawPath != "" {
+		u.RawPath += endpoint
+	}
 	u.RawQuery = opts.query.Encode()
 	var payload []byte
 	var err error

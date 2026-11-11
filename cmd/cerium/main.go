@@ -111,6 +111,20 @@ func run(ctx context.Context, args []string, in io.Reader, out, stderr io.Writer
 			return err
 		}
 		server := &http.Server{Addr: listen, Handler: bridge, ReadHeaderTimeout: 5 * time.Second, ReadTimeout: 10 * time.Second, WriteTimeout: 3 * time.Minute, IdleTimeout: 30 * time.Second}
+		go func() {
+			ticker := time.NewTicker(30 * time.Second)
+			defer ticker.Stop()
+			for {
+				if err := bridge.Maintain(ctx); err != nil {
+					fmt.Fprintln(stderr, "Cerium bridge maintenance failed; cleanup will retry")
+				}
+				select {
+				case <-ctx.Done():
+					return
+				case <-ticker.C:
+				}
+			}
+		}()
 		done := make(chan struct{})
 		go func() {
 			defer close(done)

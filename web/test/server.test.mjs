@@ -39,6 +39,15 @@ async function fixture(t) {
     base = app.adminPath + "/api";
   let cookie = "";
   async function request(path, method = "GET", data, extra = {}) {
+    const siteId = path.match(/\/sites\/([\da-f-]{36})$/)?.[1];
+    if (
+      method === "PUT" &&
+      siteId &&
+      data &&
+      typeof data === "object" &&
+      !Array.isArray(data)
+    )
+      data = { revision: app.store.row(siteId)?.revision, ...data };
     const response = await fetch(origin + path, {
       method,
       headers: {
@@ -441,11 +450,17 @@ test("restart preserves route and configuration, rotates password and invalidate
   await second.close();
 });
 
-test("editing retires in-flight jobs and preserves outstanding credential cleanup", async (t) => {
+test("cosmetic editing preserves in-flight jobs and identity editing retains credential cleanup", async (t) => {
   const f = await fixture(t);
   const id = f.store.save(config);
   const oldJob = f.store.nextJob();
   f.store.save({ ...config, name: "Renamed", password: "" }, id);
+  assert.equal(
+    f.store.db.prepare("SELECT state FROM jobs WHERE id=?").get(oldJob.id)
+      .state,
+    "running",
+  );
+  f.store.save({ ...config, account: "REPLACEMENT-ACCOUNT", password: "" }, id);
   f.store.retry(oldJob, "late connection failure");
   assert.equal(
     f.store.db.prepare("SELECT state FROM jobs WHERE id=?").get(oldJob.id)

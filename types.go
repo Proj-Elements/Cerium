@@ -6,6 +6,8 @@ import (
 	"net/http"
 	"strings"
 	"time"
+
+	"cerium/contracts"
 )
 
 type Credential struct {
@@ -53,54 +55,13 @@ func (s Session) Empty() bool {
 	return s.AccessToken == "" && s.RefreshToken == "" && len(s.Cookies) == 0
 }
 
-type Group struct {
-	ID                string       `json:"id"`
-	Name              string       `json:"name"`
-	Description       string       `json:"description,omitempty"`
-	Platform          string       `json:"platform,omitempty"`
-	Multiplier        *float64     `json:"multiplier"`
-	DefaultMultiplier *float64     `json:"default_multiplier"`
-	MultiplierSource  string       `json:"multiplier_source"`
-	Models            []string     `json:"models"`
-	ModelsKnown       bool         `json:"models_known"`
-	ModelsSource      string       `json:"models_source,omitempty"`
-	ModelsFetchedAt   string       `json:"models_fetched_at,omitempty"`
-	Prices            []ModelPrice `json:"prices,omitempty"`
-}
+type Group = contracts.Group
 
 // Prices are USD-denominated site credits, with the group multiplier applied.
 // Dynamic billing is deliberately not reduced to a misleading fixed price.
-type ModelPrice struct {
-	Model      string   `json:"model"`
-	Mode       string   `json:"mode"`
-	Input      *float64 `json:"input,omitempty"`
-	Output     *float64 `json:"output,omitempty"`
-	CacheRead  *float64 `json:"cache_read,omitempty"`
-	CacheWrite *float64 `json:"cache_write,omitempty"`
-	Request    *float64 `json:"request,omitempty"`
-	Expression string   `json:"expression,omitempty"`
-}
-
-type Catalog struct {
-	Groups   []Group  `json:"groups"`
-	Warnings []string `json:"warnings,omitempty"`
-	Scope    string   `json:"scope,omitempty"`
-}
-
-type Result struct {
-	CredentialID   int64     `json:"credential_id"`
-	Name           string    `json:"name"`
-	URL            string    `json:"url"`
-	Type           string    `json:"type"`
-	CheckedAt      time.Time `json:"checked_at"`
-	Refresh        string    `json:"refresh"`
-	Catalog        *Catalog  `json:"catalog,omitempty"`
-	Warnings       []string  `json:"warnings,omitempty"`
-	Error          string    `json:"error,omitempty"`
-	SiteID         string    `json:"site_id,omitempty"`
-	JobID          string    `json:"job_id,omitempty"`
-	ConfigRevision int64     `json:"config_revision,omitempty"`
-}
+type ModelPrice = contracts.ModelPrice
+type Catalog = contracts.Catalog
+type Result = contracts.Result
 
 type StoredSite struct {
 	Credential Credential `json:"credential"`

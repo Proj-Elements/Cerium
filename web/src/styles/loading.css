@@ -1,0 +1,35 @@
+.skeleton-card {
+  background: var(--surface);
+  border-radius: 12px;
+  padding: 16px;
+  min-height: 118px;
+  box-shadow: var(--shadow-surface);
+}
+.skeleton-card > .skeleton {
+  display: block;
+  background: var(--surface-tertiary);
+  border-radius: 6px;
+}
+.skeleton-card > .skeleton-avatar {
+  width: 34px;
+  height: 34px;
+  border-radius: 9px;
+  float: left;
+  margin-right: 10px;
+}
+.skeleton-card > .skeleton-line {
+  height: 12px;
+  width: 80%;
+  margin: 13px 0;
+}
+.skeleton-card > .skeleton-line-short {
+  width: 60%;
+}
+.skeleton-card > .skeleton-meta {
+  height: 12px;
+  width: 65px;
+  margin-top: 12px;
+}
+.refreshing > button > svg {
+  animation: spin 1s linear infinite;
+}

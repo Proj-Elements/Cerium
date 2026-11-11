@@ -1,0 +1,95 @@
+.model-comparison {
+  margin-block: 1rem;
+  border-block: 1px solid var(--border);
+  padding-block: 1rem;
+}
+
+.model-comparison summary {
+  cursor: var(--cursor-interactive, pointer);
+  font-weight: 600;
+}
+
+.comparison-body {
+  display: grid;
+  gap: 1rem;
+  padding-top: 1rem;
+}
+
+.comparison-controls {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.75rem;
+  align-items: end;
+}
+
+.comparison-controls > .text-field {
+  flex: 1 1 10rem;
+  min-width: 0;
+}
+
+.comparison-controls > .text-field:first-child {
+  flex-basis: 16rem;
+}
+
+.comparison-select {
+  display: grid;
+  gap: 0.25rem;
+  min-width: 0;
+  font-size: 0.875rem;
+}
+
+.comparison-select select {
+  max-width: 100%;
+  min-height: 2.5rem;
+  padding: 0.5rem 0.75rem;
+  border: 1px solid var(--border);
+  border-radius: 0.75rem;
+  color: var(--foreground);
+  background: var(--surface-secondary);
+  cursor: var(--cursor-interactive, pointer);
+}
+
+.comparison-table-wrap {
+  overflow: auto;
+  max-height: 30rem;
+}
+
+.model-comparison .comparison-table {
+  min-width: 0;
+}
+
+.model-comparison .comparison-table th:nth-child(2) {
+  width: 30%;
+}
+
+.model-comparison .comparison-table th:nth-child(3) {
+  width: 36%;
+}
+
+.model-comparison .comparison-table td:first-child {
+  min-width: 0;
+}
+
+.model-comparison .comparison-table th:not(:first-child),
+.model-comparison .comparison-table td:not(:first-child) {
+  text-align: left;
+  white-space: normal;
+  overflow-wrap: anywhere;
+}
+
+.comparison-table td small,
+.comparison-table time {
+  display: block;
+  white-space: normal;
+}
+
+.comparison-cost {
+  font-variant-numeric: tabular-nums;
+}
+
+@media (max-width: 480px) {
+  .comparison-controls > .comparison-select {
+    min-width: 0;
+    max-width: 100%;
+  }
+}

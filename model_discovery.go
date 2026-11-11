@@ -88,16 +88,21 @@ func (p *sub2API) discoverModels(ctx context.Context, session *Session, catalog 
 	if n, err := strconv.Atoi(os.Getenv("CERIUM_MODEL_PROBES_PER_RUN")); err == nil && n >= 1 && n <= 20 {
 		limit = n
 	}
-	for _, probe := range probes {
-		if probe.State != "done" {
-			limit = 0
-			break
-		}
-	}
 	pending, failed, cleanup := 0, 0, 0
 	for i := range catalog.Groups {
 		g := &catalog.Groups[i]
 		probe := probes[g.ID]
+		var retained int
+		if probe == nil {
+			if err := p.store.db.QueryRowContext(ctx, `SELECT count(*) FROM model_probe_cleanup
+WHERE credential_id=? AND source=? AND group_id=?`, p.credential.ID, source, g.ID).Scan(&retained); err != nil {
+				return err
+			}
+		}
+		if retained > 0 {
+			pending++
+			continue
+		}
 		if probe == nil && limit > 0 && ctx.Err() == nil {
 			if deadline, ok := ctx.Deadline(); ok && time.Until(deadline) < 2*p.client.client.Timeout+10*time.Second {
 				limit = 0
@@ -137,9 +142,6 @@ func (p *sub2API) discoverModels(ctx context.Context, session *Session, catalog 
 				return err
 			}
 			probes[g.ID] = probe
-			if createErr != nil || probe.State != "done" {
-				limit = 0
-			}
 		}
 		if probe == nil {
 			pending++

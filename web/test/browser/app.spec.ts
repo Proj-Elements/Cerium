@@ -944,7 +944,7 @@ test("unavailable discovered icons fall back to bundled provider icons", async (
     const id = route.request().url().split("/").at(-2);
     return route.fulfill({ json: { icons: [`/api/sites/${id}/icon/image`] } });
   });
-  await page.route("**/api/sites/*/icon/image", (route) =>
+  await page.route("**/api/sites/*/icon/image*", (route) =>
     route.fulfill({ status: 404 }),
   );
   await page.goto("/");
