@@ -2,11 +2,14 @@
   "bases": {
     "catalog": {"scope": "public", "groups": [{"id": "group", "name": "Group", "multiplier": 1, "models_known": true, "models": ["gpt-test"], "prices": [{"model": "gpt-test", "mode": "tokens", "input": 0.0000001}]}]},
     "result": {"site_id": "site-identifier-0001", "job_id": "job-identifier-00001", "config_revision": 1, "url": "https://example.com/prefix", "type": "newapi", "checked_at": "2026-11-11T00:00:00Z"},
+    "identity": {"site_id": "site-identifier-0001", "job_id": "job-identifier-00001", "config_revision": 1},
     "job": {"job_id": "job-identifier-00001", "site_id": "site-identifier-0001", "config_revision": 1, "operation": "sync", "name": "Site", "url": "https://example.com", "type": "newapi", "account": "account", "password": "password"}
   },
   "cases": [
     {"name": "public catalog", "contract": "Catalog", "base": "catalog", "valid": true},
     {"name": "complete callback identity", "contract": "BridgeResult", "base": "result", "valid": true},
+    {"name": "retired callback envelope", "contract": "BridgeIdentity", "base": "identity", "valid": true},
+    {"name": "retired callback invalid revision", "contract": "BridgeIdentity", "base": "identity", "path": ["config_revision"], "value": null, "valid": false},
     {"name": "missing callback id", "contract": "BridgeResult", "base": "result", "path": ["job_id"], "delete": true, "valid": false},
     {"name": "numeric callback id", "contract": "BridgeResult", "base": "result", "path": ["job_id"], "value": 123, "valid": false},
     {"name": "null callback id", "contract": "BridgeResult", "base": "result", "path": ["site_id"], "value": null, "valid": false},
@@ -40,6 +43,8 @@
     {"input": "http://example.com:80", "expected": "http://example.com"},
     {"input": "https://example.com/a/../prefix/%2e/", "expected": "https://example.com/prefix"},
     {"input": "http://[::1]:80//", "expected": "http://[::1]"},
+    {"input": "https://example.com/prefix\\suffix", "valid": false},
+    {"input": "https://example.com/pre\tfix", "valid": false},
     {"input": "https://user:pass@example.com", "valid": false},
     {"input": "https://example.com?", "valid": false},
     {"input": "https://example.com#", "valid": false},

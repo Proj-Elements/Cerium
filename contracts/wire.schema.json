@@ -82,11 +82,21 @@
         "config_revision": {"type": "integer", "minimum": 1, "maximum": 9007199254740991}
       }
     },
+    "BridgeIdentity": {
+      "x-validateOnly": true,
+      "type": "object",
+      "required": ["site_id", "job_id", "config_revision"],
+      "properties": {
+        "site_id": {"$ref": "#/$defs/SyncResult/properties/site_id"},
+        "job_id": {"$ref": "#/$defs/SyncResult/properties/job_id"},
+        "config_revision": {"$ref": "#/$defs/SyncResult/properties/config_revision"}
+      }
+    },
     "BridgeResult": {
       "x-validateOnly": true,
       "allOf": [
         {"$ref": "#/$defs/SyncResult"},
-        {"required": ["site_id", "job_id", "config_revision"]}
+        {"$ref": "#/$defs/BridgeIdentity"}
       ]
     }
   }

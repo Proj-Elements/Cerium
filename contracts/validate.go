@@ -39,7 +39,11 @@ func validate(schema map[string]any, value any, location string) error {
 	fail := func() error { return fmt.Errorf("invalid wire contract at %s", location) }
 	if reference, ok := schema["$ref"].(string); ok {
 		segments := strings.Split(reference, "/")
-		if err := validate(definitions[segments[len(segments)-1]].(map[string]any), value, location); err != nil {
+		var target any = definitions
+		for _, segment := range segments[2:] {
+			target = target.(map[string]any)[segment]
+		}
+		if err := validate(target.(map[string]any), value, location); err != nil {
 			return err
 		}
 	}

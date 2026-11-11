@@ -389,6 +389,26 @@ export const wireSchema = {
         }
       }
     },
+    "BridgeIdentity": {
+      "x-validateOnly": true,
+      "type": "object",
+      "required": [
+        "site_id",
+        "job_id",
+        "config_revision"
+      ],
+      "properties": {
+        "site_id": {
+          "$ref": "#/$defs/SyncResult/properties/site_id"
+        },
+        "job_id": {
+          "$ref": "#/$defs/SyncResult/properties/job_id"
+        },
+        "config_revision": {
+          "$ref": "#/$defs/SyncResult/properties/config_revision"
+        }
+      }
+    },
     "BridgeResult": {
       "x-validateOnly": true,
       "allOf": [
@@ -396,11 +416,7 @@ export const wireSchema = {
           "$ref": "#/$defs/SyncResult"
         },
         {
-          "required": [
-            "site_id",
-            "job_id",
-            "config_revision"
-          ]
+          "$ref": "#/$defs/BridgeIdentity"
         }
       ]
     }
@@ -422,7 +438,7 @@ export function assertWireContract(name, value) {
 }
 
 export function canonicalSiteURL(value) {
-  if (typeof value !== "string" || value.length > 2048 || !value.trim()) throw new ContractError("site.url");
+  if (typeof value !== "string" || value.length > 2048 || !value.trim() || /[\\\r\n\t]/.test(value)) throw new ContractError("site.url");
   let parsed;
   try { parsed = new URL(value.trim()); } catch { throw new ContractError("site.url"); }
   if (!["http:", "https:"].includes(parsed.protocol) || parsed.username || parsed.password || parsed.search || parsed.hash || value.trim().includes("?") || value.trim().includes("#")) throw new ContractError("site.url");
@@ -431,7 +447,7 @@ export function canonicalSiteURL(value) {
 
 function validate(schema, value, path) {
   const fail = () => { throw new ContractError(path); };
-  if (schema.$ref) validate(wireSchema.$defs[schema.$ref.split("/").at(-1)], value, path);
+  if (schema.$ref) validate(schema.$ref.slice(2).split("/").reduce((object, key) => object[key], wireSchema), value, path);
   for (const branch of schema.allOf ?? []) validate(branch, value, path);
   for (const key of schema.required ?? []) {
     if (value === null || typeof value !== "object" || !Object.hasOwn(value, key)) fail();
