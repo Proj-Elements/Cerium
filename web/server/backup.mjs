@@ -18,6 +18,7 @@ import {
 export const BACKUP_LIMIT = 64 << 20;
 export const RECOVERY_LIMIT = 512 << 20;
 let activeWorkers = 0;
+const validatedBackups = new WeakSet();
 const FORMAT = "cerium-web-backup";
 const fail = (message) => {
   throw new HttpError(400, message);
@@ -323,7 +324,12 @@ export async function parseBackupAsync(bytes, format, defaultInterval = 900) {
   backupFormat(format);
   if (bytes.length > BACKUP_LIMIT)
     throw new HttpError(413, "Backup exceeds the 64 MiB limit");
-  return workerTask("parse", { bytes, format, defaultInterval });
+  const data = await workerTask("parse", { bytes, format, defaultInterval });
+  validatedBackups.add(data);
+  return data;
+}
+export function isValidatedBackup(input) {
+  return validatedBackups.has(input);
 }
 export async function exportRecoveryDatabase(store) {
   return workerTask("recovery-export", {

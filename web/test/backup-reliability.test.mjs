@@ -8,6 +8,7 @@ import { Store } from "../server/store.mjs";
 import {
   BACKUP_LIMIT,
   exportRecoveryDatabase,
+  isValidatedBackup,
   parseBackup,
   parseBackupAsync,
   parseRecoveryDatabase,
@@ -68,6 +69,8 @@ test("backup workers read committed WAL data without touching request-thread exp
       data = await parseBackupAsync(bytes, "json");
     assert.equal(data.sites[0].id, id);
     assert.equal(data.sites[0].config.password, provider.password);
+    assert.equal(isValidatedBackup(data), true);
+    assert.equal(isValidatedBackup(structuredClone(data)), false);
     assert.ok(ticks > 0);
     assert.equal(
       store.db.prepare("SELECT state FROM jobs WHERE id=?").get(job.id).state,
