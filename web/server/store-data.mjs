@@ -1,5 +1,5 @@
 import { randomUUID } from "node:crypto";
-import { HttpError } from "./validation.mjs";
+import { HttpError, url, site as validateSite } from "./validation.mjs";
 import { validateBackup, siteIdentity, isValidatedBackup } from "./backup.mjs";
 
 export function exportData({ siteIds, includeIcons = true } = {}) {
@@ -249,6 +249,73 @@ export function recoverRevisionBoundaries() {
     includeIcons: false,
   });
   importData.call(this, data);
+}
+
+export function recoverLegacyURLs() {
+  const entries = this.db
+      .prepare("SELECT * FROM sites ORDER BY rowid")
+      .all()
+      .map((row) => {
+        const config = JSON.parse(row.config),
+          canonical = url(config.url);
+        return {
+          row,
+          config,
+          canonical,
+          identity: siteIdentity({ ...config, url: canonical }),
+        };
+      }),
+    primary = new Map(),
+    migratedIdentities = new Set(
+      entries
+        .filter((entry) => entry.config.url !== entry.canonical)
+        .map((entry) => entry.identity),
+    );
+  for (const entry of entries) {
+    if (entry.identity !== null && !primary.has(entry.identity))
+      primary.set(entry.identity, entry.row.id);
+  }
+  for (const { row, config, canonical, identity } of entries) {
+    const owner = identity === null ? row.id : primary.get(identity),
+      duplicate = owner !== row.id && migratedIdentities.has(identity);
+    if (config.url === canonical && !(duplicate && config.enabled)) continue;
+    if (!duplicate && identity === null) {
+      this.save({ ...config, url: canonical }, row.id);
+      continue;
+    }
+    this.transaction(() => {
+      const normalized = validateSite({
+          ...config,
+          url: canonical,
+          enabled: duplicate ? false : config.enabled,
+        }),
+        syncRevision = row.sync_revision + 1;
+      this.retireJobs(row.id);
+      this.db
+        .prepare(
+          `UPDATE sites SET config=?,revision=revision+1,sync_revision=?,next_sync=?,error=?,
+          snapshot=CASE WHEN ? THEN snapshot ELSE NULL END,fetched_at=CASE WHEN ? THEN fetched_at ELSE NULL END,
+          last_checked=CASE WHEN ? THEN last_checked ELSE NULL END,warnings=CASE WHEN ? THEN warnings ELSE NULL END,
+          favicon=NULL,favicon_blob=NULL,favicon_type=NULL,icon_revision=icon_revision+1 WHERE id=?`,
+        )
+        .run(
+          JSON.stringify(normalized),
+          syncRevision,
+          Date.now(),
+          duplicate
+            ? `duplicate_identity: canonical URL duplicates site ${owner}; update URL/account/user ID to re-enable`
+            : null,
+          Number(duplicate),
+          Number(duplicate),
+          Number(duplicate),
+          Number(duplicate),
+          row.id,
+        );
+      if (duplicate)
+        this.enqueue({ ...row, sync_revision: syncRevision }, "delete");
+      else if (normalized.enabled) this.enqueue(this.row(row.id));
+    });
+  }
 }
 
 export function sites(admin = false) {

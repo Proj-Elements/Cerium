@@ -16,6 +16,7 @@ import {
   exportData,
   importData,
   recoverRevisionBoundaries,
+  recoverLegacyURLs,
   sites,
 } from "./store-data.mjs";
 import {
@@ -82,6 +83,7 @@ export class Store {
       .run("payment_presets", JSON.stringify(DEFAULT_PAYMENT_PRESETS));
     this.db.exec("UPDATE jobs SET state='pending' WHERE state='running'");
     recoverRevisionBoundaries.call(this);
+    recoverLegacyURLs.call(this);
   }
   get interval() {
     return Number(

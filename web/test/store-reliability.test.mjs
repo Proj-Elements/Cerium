@@ -42,6 +42,140 @@ test("canonical provider URLs strip all trailing slashes", () => {
   assert.equal(url("https://relay.example////"), "https://relay.example");
 });
 
+test("startup canonicalizes legacy provider URLs and supersedes incompatible queued payloads", (t) => {
+  const dir = mkdtempSync(join(tmpdir(), "cerium-url-restart-")),
+    path = join(dir, "web.db");
+  let store = new Store(path);
+  t.after(() => {
+    if (store.db.isOpen) store.close();
+    rmSync(dir, { recursive: true, force: true });
+  });
+  const id = store.save(config),
+    initial = store.db.prepare("SELECT * FROM jobs WHERE site_id=?").get(id),
+    legacy = {
+      ...JSON.parse(store.row(id).config),
+      url: "https://relay.example/prefix/",
+    },
+    payload = { ...JSON.parse(initial.payload), url: legacy.url };
+  store.db
+    .prepare("UPDATE sites SET config=? WHERE id=?")
+    .run(JSON.stringify(legacy), id);
+  store.db
+    .prepare("UPDATE jobs SET payload=? WHERE id=?")
+    .run(JSON.stringify(payload), initial.id);
+  store.close();
+  store = new Store(path);
+  assert.equal(
+    JSON.parse(store.row(id).config).url,
+    "https://relay.example/prefix",
+  );
+  assert.equal(store.row(id).sync_revision, 2);
+  assert.equal(store.row(id).revision, 2);
+  assert.equal(
+    store.db.prepare("SELECT state FROM jobs WHERE id=?").get(initial.id).state,
+    "superseded",
+  );
+  const current = store.nextJob();
+  assert.notEqual(current.id, initial.id);
+  assert.equal(JSON.parse(current.payload).url, "https://relay.example/prefix");
+  store.accept(result(current));
+  assert.equal(store.sites(true)[0].status, "ok");
+  store.close();
+  store = new Store(path);
+  assert.equal(store.row(id).revision, 2);
+  assert.equal(store.nextJob(), undefined);
+});
+
+test("conflicting canonical URLs preserve legacy records without blocking startup", (t) => {
+  const dir = mkdtempSync(join(tmpdir(), "cerium-url-conflict-")),
+    path = join(dir, "web.db");
+  let store = new Store(path);
+  t.after(() => {
+    if (store.db.isOpen) store.close();
+    rmSync(dir, { recursive: true, force: true });
+  });
+  const canonicalId = store.save(config),
+    legacyId = store.save({
+      ...config,
+      url: "https://temporary.example",
+      description: "Retain this note",
+    }),
+    legacy = {
+      ...JSON.parse(store.row(legacyId).config),
+      url: "https://relay.example/prefix/",
+    };
+  const firstLegacy = {
+    ...JSON.parse(store.row(canonicalId).config),
+    url: "https://relay.example/prefix//",
+  };
+  store.db
+    .prepare("UPDATE sites SET config=? WHERE id=?")
+    .run(JSON.stringify(firstLegacy), canonicalId);
+  store.db
+    .prepare("UPDATE sites SET config=? WHERE id=?")
+    .run(JSON.stringify(legacy), legacyId);
+  store.close();
+  store = new Store(path);
+  const canonical = store.row(canonicalId),
+    recovered = store.row(legacyId),
+    recoveredConfig = JSON.parse(recovered.config);
+  assert.equal(JSON.parse(canonical.config).enabled, true);
+  assert.equal(canonical.revision, 2);
+  assert.equal(JSON.parse(canonical.config).url, url(config.url));
+  assert.equal(recoveredConfig.enabled, false);
+  assert.equal(recoveredConfig.url, url(config.url));
+  assert.equal(recoveredConfig.description, "Retain this note");
+  assert.equal(
+    recovered.error,
+    `duplicate_identity: canonical URL duplicates site ${canonicalId}; update URL/account/user ID to re-enable`,
+  );
+  assert.equal(store.sites(true).length, 2);
+  assert.equal(recoveredConfig.password, config.password);
+  assert.throws(
+    () => store.save({ ...recoveredConfig, enabled: true }, legacyId),
+    { status: 409 },
+  );
+  const cleanup = store.db
+    .prepare("SELECT payload FROM jobs WHERE site_id=? AND state='pending'")
+    .get(legacyId);
+  assert.equal(JSON.parse(cleanup.payload).operation, "delete");
+  store.save(
+    { ...recoveredConfig, url: "https://resolved.example", enabled: true },
+    legacyId,
+  );
+  assert.equal(JSON.parse(store.row(legacyId).config).enabled, true);
+});
+
+test("URL migration keeps distinct provider accounts and ordinary manual sites enabled", (t) => {
+  const dir = mkdtempSync(join(tmpdir(), "cerium-url-identities-")),
+    path = join(dir, "web.db");
+  let store = new Store(path);
+  t.after(() => {
+    if (store.db.isOpen) store.close();
+    rmSync(dir, { recursive: true, force: true });
+  });
+  const first = store.save(config),
+    second = store.save({ ...config, account: "other-account" }),
+    manual = { ...config, type: "others", manual_catalog: { groups: [] } },
+    manualFirst = store.save(manual),
+    manualSecond = store.save(manual);
+  for (const id of [first, second, manualFirst, manualSecond]) {
+    const current = JSON.parse(store.row(id).config);
+    current.url += "/";
+    store.db
+      .prepare("UPDATE sites SET config=? WHERE id=?")
+      .run(JSON.stringify(current), id);
+  }
+  store.close();
+  store = new Store(path);
+  assert.equal(store.sites().length, 4);
+  assert.ok(
+    store
+      .sites(true)
+      .every((site) => site.enabled && site.url === url(config.url)),
+  );
+});
+
 test("concurrent admin drafts reject stale writes without changing data or jobs", (t) => {
   const store = fixture(t),
     id = store.save(config);
