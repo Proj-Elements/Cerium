@@ -226,6 +226,175 @@ test("model refresh is explicit, deduplicated and excludes ordinary active work"
   );
 });
 
+test("successful model refresh clears failed-job suppression for scheduled sync", (t) => {
+  const store = fixture(t),
+    id = store.save(config),
+    failed = store.nextJob();
+  store.reject(failed, "callback_rejected: invalid upstream catalog");
+  const refreshId = store.refreshModels(id),
+    refresh = store.nextJob();
+  assert.equal(refresh.id, refreshId);
+  assert.equal(
+    store.db.prepare("SELECT state FROM jobs WHERE id=?").get(failed.id).state,
+    "superseded",
+  );
+  store.accept(result(refresh));
+  store.db.prepare("UPDATE sites SET next_sync=0 WHERE id=?").run(id);
+  store.schedule();
+  const scheduled = store.nextJob();
+  assert.equal(scheduled.site_id, id);
+  assert.notEqual(scheduled.id, refreshId);
+  assert.equal(JSON.parse(scheduled.payload).refresh_models, undefined);
+});
+
+test("startup recovers legacy revision boundaries without exporting or trusting icon caches", (t) => {
+  const dir = mkdtempSync(join(tmpdir(), "cerium-boundary-restart-")),
+    path = join(dir, "web.db");
+  let store = new Store(path);
+  t.after(() => {
+    if (store.db.isOpen) store.close();
+    rmSync(dir, { recursive: true, force: true });
+  });
+  const ids = [
+    store.save(config),
+    store.save({ ...config, url: "https://second-boundary.example" }),
+  ];
+  const unaffected = store.save({
+    ...config,
+    url: "https://unaffected.example",
+  });
+  const unchangedJob = store.db
+    .prepare("SELECT id FROM jobs WHERE site_id=?")
+    .get(unaffected).id;
+  const checkedAt = new Date().toISOString(),
+    detail = [
+      {
+        kind: "multiplier",
+        group_id: "g",
+        name: "Group",
+        before: 1,
+        after: 2,
+        before_dynamic: false,
+        after_dynamic: false,
+      },
+    ],
+    changeId = randomUUID();
+  store.db
+    .prepare(
+      "INSERT INTO catalog_changes(id,site_id,checked_at,details) VALUES(?,?,?,?)",
+    )
+    .run(changeId, ids[0], checkedAt, JSON.stringify(detail));
+  store.db
+    .prepare(
+      "UPDATE sites SET revision=?,sync_revision=?,favicon=?,favicon_blob=?,favicon_type=? WHERE id=?",
+    )
+    .run(
+      Number.MAX_SAFE_INTEGER,
+      Number.MAX_SAFE_INTEGER,
+      "invalid legacy icon state",
+      Buffer.from("invalid"),
+      "image/png",
+      ids[0],
+    );
+  store.db
+    .prepare("UPDATE sites SET sync_revision=? WHERE id=?")
+    .run(Number.MAX_SAFE_INTEGER - 1, ids[1]);
+  store.close();
+  store = new Store(path);
+  for (const id of ids) {
+    assert.equal(store.row(id), undefined);
+    const cleanup = store.db
+      .prepare(
+        "SELECT payload,revision FROM jobs WHERE site_id=? AND state='pending'",
+      )
+      .get(id);
+    assert.equal(cleanup.revision, Number.MAX_SAFE_INTEGER);
+    assert.equal(JSON.parse(cleanup.payload).operation, "delete");
+  }
+  const replacement = store
+    .sites(true)
+    .find((site) => site.url === url(config.url));
+  assert.equal(replacement.revision, 1);
+  assert.equal(store.row(replacement.id).favicon, null);
+  assert.equal(store.row(replacement.id).favicon_blob, null);
+  assert.equal(store.changes(true)[0].id, changeId);
+  assert.equal(store.changes(true)[0].site_id, replacement.id);
+  store.save(
+    { ...config, revision: 1, name: "Editable after restart" },
+    replacement.id,
+  );
+  assert.equal(store.row(replacement.id).revision, 2);
+  assert.equal(store.row(unaffected).revision, 1);
+  assert.equal(
+    store.db.prepare("SELECT state FROM jobs WHERE id=?").get(unchangedJob)
+      .state,
+    "pending",
+  );
+  const recoveredIds = store.sites(true).map((site) => site.id);
+  store.close();
+  store = new Store(path);
+  assert.deepEqual(
+    store.sites(true).map((site) => site.id),
+    recoveredIds,
+  );
+});
+
+test("replace safely queues deletion for a legacy exhausted revision", (t) => {
+  const store = fixture(t),
+    id = store.save(config),
+    backup = store.exportData();
+  backup.sites = [];
+  backup.changes = [];
+  store.db
+    .prepare("UPDATE sites SET revision=?,sync_revision=? WHERE id=?")
+    .run(Number.MAX_SAFE_INTEGER, Number.MAX_SAFE_INTEGER, id);
+  store.importData(backup, "replace");
+  assert.equal(store.sites(true).length, 0);
+  const cleanup = store.nextJob();
+  assert.equal(cleanup.site_id, id);
+  assert.equal(cleanup.revision, Number.MAX_SAFE_INTEGER);
+  assert.equal(
+    JSON.parse(cleanup.payload).config_revision,
+    Number.MAX_SAFE_INTEGER,
+  );
+  assert.equal(JSON.parse(cleanup.payload).operation, "delete");
+});
+
+test("legacy password configs keep their snapshot after cosmetic edits", (t) => {
+  const store = fixture(t),
+    id = store.save(config),
+    job = store.nextJob();
+  store.accept(result(job));
+  const saved = JSON.parse(store.row(id).config);
+  delete saved.auth_mode;
+  store.db
+    .prepare("UPDATE sites SET config=? WHERE id=?")
+    .run(JSON.stringify(saved), id);
+  const snapshot = store.row(id).snapshot;
+  store.save({ ...config, name: "Cosmetic legacy edit" }, id);
+  assert.equal(store.row(id).sync_revision, 1);
+  assert.equal(store.row(id).snapshot, snapshot);
+  assert.equal(store.nextJob(), undefined);
+});
+
+test("manual-site cosmetic edits retain a single pending provider deletion", (t) => {
+  const store = fixture(t),
+    id = store.save(config),
+    manual = { ...config, type: "others", manual_catalog: { groups: [] } };
+  store.save(manual, id);
+  const cleanup = store.db
+    .prepare("SELECT id FROM jobs WHERE site_id=? AND state='pending'")
+    .get(id);
+  store.save({ ...manual, name: "Cosmetic manual edit" }, id);
+  assert.deepEqual(
+    store.db
+      .prepare("SELECT id FROM jobs WHERE site_id=? AND state='pending'")
+      .all(id),
+    [cleanup],
+  );
+  assert.equal(store.row(id).sync_revision, 2);
+});
+
 test("history pagination reaches retained records past the first 200 and supports search", (t) => {
   const store = fixture(t),
     id = store.save(config);
