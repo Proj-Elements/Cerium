@@ -2,3 +2,4 @@
 !Dockerfile
 !runner.py
 !requirements.txt
+!requirements.lock

@@ -12,4 +12,6 @@
 !server/**
 !scripts/
 !scripts/**
+!build-tools/
+!build-tools/**
 !Dockerfile
