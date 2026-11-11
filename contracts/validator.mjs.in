@@ -1,0 +1,52 @@
+export class ContractError extends Error {
+  constructor(path) {
+    super(`Invalid wire contract at ${path}`);
+    this.name = "ContractError";
+  }
+}
+
+export function assertWireContract(name, value) {
+  const definition = wireSchema.$defs[name];
+  if (!definition) throw new Error(`Unknown wire contract ${name}`);
+  validate(definition, value, name);
+  return value;
+}
+
+export function canonicalSiteURL(value) {
+  if (typeof value !== "string" || value.length > 2048 || !value.trim()) throw new ContractError("site.url");
+  let parsed;
+  try { parsed = new URL(value.trim()); } catch { throw new ContractError("site.url"); }
+  if (!["http:", "https:"].includes(parsed.protocol) || parsed.username || parsed.password || parsed.search || parsed.hash || value.trim().includes("?") || value.trim().includes("#")) throw new ContractError("site.url");
+  return parsed.href.replace(/\/+$/, "");
+}
+
+function validate(schema, value, path) {
+  const fail = () => { throw new ContractError(path); };
+  if (schema.$ref) validate(wireSchema.$defs[schema.$ref.split("/").at(-1)], value, path);
+  for (const branch of schema.allOf ?? []) validate(branch, value, path);
+  for (const key of schema.required ?? []) {
+    if (value === null || typeof value !== "object" || !Object.hasOwn(value, key)) fail();
+  }
+  if (!schema.type) return;
+  const kinds = Array.isArray(schema.type) ? schema.type : [schema.type];
+  const kind = value === null ? "null" : Array.isArray(value) ? "array" : typeof value;
+  if (!kinds.includes(kind) && !(kind === "number" && kinds.includes("integer") && Number.isSafeInteger(value))) fail();
+  if (schema.enum && !schema.enum.includes(value)) fail();
+  if (kind === "string") {
+    const length = Array.from(value).length;
+    if ((schema.minLength !== undefined && (length < schema.minLength || !value.trim())) ||
+        (schema.maxLength !== undefined && length > schema.maxLength) ||
+        (schema["x-maxUtf16Length"] !== undefined && value.length > schema["x-maxUtf16Length"])) fail();
+    if (schema.format === "date-time" && (!/^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:\.\d+)?(?:Z|[+-]\d{2}:\d{2})$/.test(value) || !Number.isFinite(Date.parse(value)))) fail();
+  } else if (kind === "number") {
+    if (!Number.isFinite(value) || (schema.minimum !== undefined && value < schema.minimum) ||
+        (schema.maximum !== undefined && value > schema.maximum)) fail();
+  } else if (kind === "array") {
+    if (schema.maxItems !== undefined && value.length > schema.maxItems) fail();
+    value.forEach((entry, index) => validate(schema.items, entry, `${path}[${index}]`));
+  } else if (kind === "object") {
+    for (const [key, child] of Object.entries(schema.properties ?? {})) {
+      if (Object.hasOwn(value, key)) validate(child, value[key], `${path}.${key}`);
+    }
+  }
+}

@@ -1,2 +1,4 @@
 src/data/model-prices.json
 src/assets/models/
+src/contracts.generated.ts
+server/contracts.generated.mjs
