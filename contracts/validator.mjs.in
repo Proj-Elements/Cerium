@@ -13,11 +13,11 @@ export function assertWireContract(name, value) {
 }
 
 export function canonicalSiteURL(value) {
-  if (typeof value !== "string" || value.length > 2048 || !value.trim() || /[\\\r\n\t]/.test(value)) throw new ContractError("site.url");
+  if (typeof value !== "string" || value.length > 2048 || !value.trim() || /[\\\r\n\t]|%(?![0-9a-f]{2})/i.test(value)) throw new ContractError("site.url");
   let parsed;
   try { parsed = new URL(value.trim()); } catch { throw new ContractError("site.url"); }
   if (!["http:", "https:"].includes(parsed.protocol) || parsed.username || parsed.password || parsed.search || parsed.hash || value.trim().includes("?") || value.trim().includes("#")) throw new ContractError("site.url");
-  return parsed.href.replace(/\/+$/, "");
+  return parsed.href.replace(/\|/g, "%7C").replace(/\/+$/, "");
 }
 
 function validate(schema, value, path) {
