@@ -21,6 +21,7 @@ import (
 const maxRecoveryBytes = 256 << 20
 
 var errRecoverySize = errors.New("recovery payload exceeds limit")
+var errRecoveryBusy = errors.New("synchronization lease is active")
 
 var recoveryTables = []string{
 	"credentials", "sessions", "snapshots", "model_probes", "bridge_sites", "bridge_jobs",
@@ -62,6 +63,10 @@ func (b *Bridge) recovery(w http.ResponseWriter, r *http.Request, body []byte, g
 		}
 		archive, err := b.store.exportRecovery(ctx)
 		if err != nil {
+			if errors.Is(err, errRecoveryBusy) {
+				b.recoveryResponse(w, http.StatusServiceUnavailable, map[string]any{"error": "worker_busy", "code": "worker_busy", "stage": "recovery"})
+				return
+			}
 			if errors.Is(err, errRecoverySize) {
 				b.recoveryResponse(w, http.StatusRequestEntityTooLarge, map[string]any{"error": "recovery_size_limit", "code": "recovery_size_limit", "stage": "recovery"})
 				return
@@ -79,6 +84,10 @@ func (b *Bridge) recovery(w http.ResponseWriter, r *http.Request, body []byte, g
 	}
 	validateOnly := r.URL.Path == "/v1/recovery/validate"
 	if err := b.store.importRecovery(ctx, archive, validateOnly); err != nil {
+		if errors.Is(err, errRecoveryBusy) {
+			b.recoveryResponse(w, http.StatusServiceUnavailable, map[string]any{"error": "worker_busy", "code": "worker_busy", "stage": "recovery"})
+			return
+		}
 		b.recoveryResponse(w, http.StatusBadRequest, map[string]any{"error": "invalid_recovery_state", "code": "invalid_recovery_state", "stage": "recovery"})
 		return
 	}
@@ -176,6 +185,9 @@ func (s *Store) exportRecovery(ctx context.Context) (recoveryArchive, error) {
 		return archive, err
 	}
 	defer tx.Rollback()
+	if err := recoveryLeaseGuard(ctx, tx); err != nil {
+		return archive, err
+	}
 	bytesRead := 0
 	for _, name := range recoveryTables {
 		columns, err := recoveryColumns(ctx, tx, name)
@@ -236,6 +248,9 @@ func (s *Store) importRecovery(ctx context.Context, archive recoveryArchive, val
 		return err
 	}
 	defer tx.Rollback()
+	if err := recoveryLeaseGuard(ctx, tx); err != nil {
+		return err
+	}
 	if _, err = tx.ExecContext(ctx, "PRAGMA defer_foreign_keys=ON"); err != nil {
 		return err
 	}
@@ -326,6 +341,17 @@ func (s *Store) importRecovery(ctx context.Context, archive recoveryArchive, val
 		return tx.Rollback()
 	}
 	return tx.Commit()
+}
+
+func recoveryLeaseGuard(ctx context.Context, tx *sql.Tx) error {
+	var active int
+	if err := tx.QueryRowContext(ctx, "SELECT COUNT(*) FROM leases WHERE expires_at>?", time.Now().Unix()).Scan(&active); err != nil {
+		return err
+	}
+	if active != 0 {
+		return errRecoveryBusy
+	}
+	return nil
 }
 
 func validateRecoveryRow(table string, columns []recoveryColumn, row []any) error {

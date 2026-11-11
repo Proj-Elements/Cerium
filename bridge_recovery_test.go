@@ -98,7 +98,7 @@ func TestWorkerRecoveryRoundTripAndValidation(t *testing.T) {
 	if _, exists := archive.Tables["leases"]; exists {
 		t.Fatal("live locks were included in recovery")
 	}
-	if _, err := bridge.store.db.Exec("UPDATE credentials SET name='changed'; INSERT INTO leases(credential_id,owner,expires_at) VALUES(?,'live',?)", credential.ID, time.Now().Add(time.Hour).Unix()); err != nil {
+	if _, err := bridge.store.db.Exec("UPDATE credentials SET name='changed'; INSERT INTO leases(credential_id,owner,expires_at) VALUES(?,'expired',?)", credential.ID, time.Now().Add(-time.Hour).Unix()); err != nil {
 		t.Fatal(err)
 	}
 	validated := recoveryCall(t, bridge, &gate, "/v1/recovery/validate", exported.Body.Bytes())
@@ -137,6 +137,52 @@ func TestWorkerRecoveryRoundTripAndValidation(t *testing.T) {
 	}
 	if identity, err := inserted.LastInsertId(); err != nil || identity != 100 {
 		t.Fatal("recovery reused a deleted credential identity")
+	}
+}
+
+func TestWorkerRecoveryRejectsExternalSynchronizationLease(t *testing.T) {
+	for _, action := range []string{"export", "import", "validate"} {
+		t.Run(action, func(t *testing.T) {
+			bridge, credential := recoveryFixture(t)
+			var gate sync.RWMutex
+			exported := recoveryCall(t, bridge, &gate, "/v1/recovery/export", []byte("{}"))
+			if exported.Code != http.StatusOK {
+				t.Fatal("cannot create initial recovery archive")
+			}
+			var sequence int
+			var databaseName, filename string
+			if err := bridge.store.db.QueryRow("PRAGMA database_list").Scan(&sequence, &databaseName, &filename); err != nil {
+				t.Fatal(err)
+			}
+			external, err := OpenStore(filename)
+			if err != nil {
+				t.Fatal(err)
+			}
+			defer external.Close()
+			expiresAt := time.Now().Add(time.Hour).Unix()
+			if _, err := external.db.Exec("UPDATE credentials SET name='concurrent edit'; INSERT INTO leases(credential_id,owner,expires_at) VALUES(?,'external-cli',?)", credential.ID, expiresAt); err != nil {
+				t.Fatal(err)
+			}
+			body := exported.Body.Bytes()
+			if action == "export" {
+				body = []byte("{}")
+			}
+			response := recoveryCall(t, bridge, &gate, "/v1/recovery/"+action, body)
+			if response.Code != http.StatusServiceUnavailable || !bytes.Contains(response.Body.Bytes(), []byte(`"code":"worker_busy"`)) || !bytes.Contains(response.Body.Bytes(), []byte(`"stage":"recovery"`)) {
+				t.Fatalf("recovery ignored an external CLI lease: status=%d", response.Code)
+			}
+			var name, owner string
+			var actualExpiry int64
+			if err := external.db.QueryRow("SELECT c.name,l.owner,l.expires_at FROM credentials c JOIN leases l ON l.credential_id=c.id WHERE c.id=?", credential.ID).Scan(&name, &owner, &actualExpiry); err != nil || name != "concurrent edit" || owner != "external-cli" || actualExpiry != expiresAt {
+				t.Fatal("rejected recovery changed live data or the external lease")
+			}
+			if _, err := external.db.Exec("UPDATE leases SET expires_at=? WHERE credential_id=?", time.Now().Add(-time.Second).Unix(), credential.ID); err != nil {
+				t.Fatal(err)
+			}
+			if response := recoveryCall(t, bridge, &gate, "/v1/recovery/"+action, body); response.Code != http.StatusOK {
+				t.Fatalf("expired lease blocked recovery: status=%d body=%s", response.Code, response.Body)
+			}
+		})
 	}
 }
 
