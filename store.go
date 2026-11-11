@@ -101,7 +101,7 @@ func OpenStore(filename string) (*Store, error) {
 	db.SetMaxIdleConns(1)
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
-	if _, err = db.ExecContext(ctx, schema); err != nil {
+	if _, err = db.ExecContext(ctx, schema+probeCleanupSchema); err != nil {
 		db.Close()
 		return nil, fmt.Errorf("initialize SQLite: %w", err)
 	}
