@@ -1,27 +1,5 @@
-export type Price = {
-  model: string;
-  mode: "tokens" | "request" | "dynamic" | "unknown";
-  input?: number | null;
-  output?: number | null;
-  request?: number | null;
-  cache_read?: number | null;
-  cache_write?: number | null;
-  expression?: string;
-};
-export type Group = {
-  id: string;
-  name: string;
-  description?: string;
-  platform?: string;
-  multiplier: number | null;
-  multiplier_source?: string;
-  models: string[];
-  models_known: boolean;
-  models_source?: string;
-  models_fetched_at?: string;
-  prices?: Price[];
-};
-export type Catalog = { scope: string; groups: Group[] };
+import type { Catalog, Price } from "./contracts.generated";
+export type { Price, Group, Catalog } from "./contracts.generated";
 export type Site = {
   id: string;
   revision: number;

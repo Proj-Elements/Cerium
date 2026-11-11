@@ -1,4 +1,4 @@
-import { APIError } from "./api";
+import { APIError, clearAPICache } from "./api.ts";
 
 export type BackupFormat = "json" | "sqlite";
 export type ImportMode = "merge" | "replace";
@@ -8,16 +8,25 @@ export type ImportResult = {
   interval: number;
 };
 export const BACKUP_LIMIT = 64 << 20;
+export const RECOVERY_LIMIT = 512 << 20;
+export type RecoveryResult = {
+  restored: boolean;
+  sites: number;
+  jobs: number;
+  admin_path: string;
+};
 
-async function request(path: string, format: BackupFormat, file?: File) {
+async function request(path: string, contentType: string, file?: File) {
+  if (file) clearAPICache();
   const response = await fetch(path, {
     method: "POST",
     credentials: "same-origin",
-    signal: AbortSignal.timeout(60000),
+    signal: AbortSignal.timeout(
+      contentType === "application/gzip" ? 180000 : 60000,
+    ),
     headers: {
       "X-Cerium-Admin": "1",
-      "Content-Type":
-        format === "json" ? "application/json" : "application/vnd.sqlite3",
+      "Content-Type": contentType,
     },
     body: file,
   });
@@ -30,24 +39,33 @@ async function request(path: string, format: BackupFormat, file?: File) {
   }
   return response;
 }
-export async function downloadBackup(base: string, format: BackupFormat) {
-  const response = await request(
-      `${base}/data/export?format=${format}`,
-      format,
-    ),
-    blob = await response.blob(),
+async function download(response: Response, fallbackName: string) {
+  const blob = await response.blob(),
     url = URL.createObjectURL(blob),
     link = document.createElement("a");
   link.href = url;
   link.download =
     response.headers
       .get("Content-Disposition")
-      ?.match(/filename="([\w.-]+)"/)?.[1] ??
-    `cerium-web.${format === "json" ? "json" : "db"}`;
+      ?.match(/filename="([\w.-]+)"/)?.[1] ?? fallbackName;
   document.body.append(link);
   link.click();
   link.remove();
   setTimeout(() => URL.revokeObjectURL(url), 1000);
+}
+export async function downloadBackup(
+  base: string,
+  format: BackupFormat,
+  includeCache = true,
+) {
+  const response = await request(
+    `${base}/data/export?format=${format}${includeCache ? "" : "&cache=omit"}`,
+    format === "json" ? "application/json" : "application/vnd.sqlite3",
+  );
+  await download(response, `cerium-web.${format === "json" ? "json" : "db"}`);
+  return {
+    cacheOmitted: response.headers.get("X-Cerium-Backup-Cache") === "omitted",
+  };
 }
 export async function uploadBackup(
   base: string,
@@ -60,8 +78,25 @@ export async function uploadBackup(
   return (
     await request(
       `${base}/data/import?format=${format}&mode=${mode}`,
-      format,
+      format === "json" ? "application/json" : "application/vnd.sqlite3",
       file,
     )
+  ).json();
+}
+export async function downloadRecovery(base: string) {
+  const response = await request(
+    `${base}/data/recovery/export`,
+    "application/gzip",
+  );
+  await download(response, "cerium-recovery.json.gz");
+}
+export async function uploadRecovery(
+  base: string,
+  file: File,
+): Promise<RecoveryResult> {
+  if (!file.size) throw new Error("恢复文件为空");
+  if (file.size > RECOVERY_LIMIT) throw new Error("恢复文件不能超过 512 MiB");
+  return (
+    await request(`${base}/data/recovery/import`, "application/gzip", file)
   ).json();
 }
