@@ -306,6 +306,26 @@
 .admin-changes .change-item {
   padding: 18px 0;
 }
+.admin-history-pagination {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: flex-end;
+  gap: 8px;
+  margin-top: 20px;
+}
+.admin-history-pagination > span {
+  flex: 1;
+  min-width: 0;
+  color: var(--muted);
+  font-size: 11px;
+  font-variant-numeric: tabular-nums;
+}
+.admin-history-pagination > .button {
+  min-height: 30px;
+  height: 30px;
+  font-size: 11px;
+}
 .login-wrap {
   max-width: 400px;
   margin: 50px auto 80px;
@@ -491,4 +511,22 @@
   font: 11px/1.8 var(--font-mono);
   resize: vertical;
   min-height: 140px;
+}
+.editor-conflict {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 12px;
+}
+.editor-conflict > .field-help {
+  flex: 1;
+  min-width: min(100%, 220px);
+}
+.editor-conflict > .button {
+  flex-shrink: 0;
+}
+.backup-settings.recovery-settings {
+  margin-top: 24px;
+  padding-top: 24px;
+  border-top: 1px solid var(--separator);
 }

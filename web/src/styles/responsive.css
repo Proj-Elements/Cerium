@@ -438,6 +438,13 @@
   .admin-changes {
     padding: 20px 16px;
   }
+  .admin-history-pagination > span,
+  .editor-conflict > .field-help {
+    flex-basis: 100%;
+  }
+  .editor-conflict > .button {
+    margin-left: auto;
+  }
   .admin-note {
     font-size: 10px;
   }
