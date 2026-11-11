@@ -122,6 +122,12 @@ func TestStoreRoundTripAndCredentialChanges(t *testing.T) {
 	if ok, err := store.acquire(ctx, c.ID, "owner", time.Now().Add(time.Minute)); err != nil || !ok {
 		t.Fatalf("acquire: %v", err)
 	}
+	if err := store.Remove(ctx, c.ID); !errors.Is(err, errSynchronizationBusy) {
+		t.Fatalf("active lease was not protected: %v", err)
+	}
+	if err := store.release(ctx, c.ID, "owner"); err != nil {
+		t.Fatal(err)
+	}
 	if err := store.Remove(ctx, c.ID); err != nil {
 		t.Fatal(err)
 	}

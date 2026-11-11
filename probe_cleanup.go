@@ -195,6 +195,9 @@ func (s *Store) refreshModelProbes(ctx context.Context, credentialID int64, jobI
 			return err
 		}
 	}
+	if err := credentialIdle(ctx, tx, credentialID); err != nil {
+		return err
+	}
 	var pending int
 	if err := tx.QueryRowContext(ctx, `SELECT
 (SELECT count(*) FROM model_probes WHERE credential_id=? AND state!='done')+

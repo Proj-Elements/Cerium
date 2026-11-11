@@ -198,6 +198,9 @@ func (s *Store) Import(ctx context.Context, r io.Reader) (int, error) {
 		case err == nil:
 			changed := password != c.Password || token != c.AccessToken
 			if changed {
+				if err = credentialIdle(ctx, tx, id); err != nil {
+					return 0, err
+				}
 				if err = retainProbeCleanup(ctx, tx, id); err != nil {
 					return 0, err
 				}
@@ -343,6 +346,9 @@ func (s *Store) Remove(ctx context.Context, id int64) error {
 		return err
 	}
 	defer tx.Rollback()
+	if err = credentialIdle(ctx, tx, id); err != nil {
+		return err
+	}
 	if err = retainProbeCleanup(ctx, tx, id); err != nil {
 		return err
 	}
@@ -358,6 +364,37 @@ func (s *Store) Remove(ctx context.Context, id int64) error {
 		return err
 	}
 	return tx.Commit()
+}
+
+func credentialIdle(ctx context.Context, tx *sql.Tx, credentialID int64) error {
+	var active bool
+	if err := tx.QueryRowContext(ctx, "SELECT EXISTS(SELECT 1 FROM leases WHERE credential_id=? AND expires_at>?)", credentialID, time.Now().Unix()).Scan(&active); err != nil {
+		return err
+	}
+	if active {
+		return errSynchronizationBusy
+	}
+	return nil
+}
+
+func (s *Store) acquireCredential(ctx context.Context, credential Credential, owner string, until time.Time) (bool, error) {
+	result, err := s.db.ExecContext(ctx, `INSERT INTO leases(credential_id,owner,expires_at)
+SELECT id,?,? FROM credentials WHERE id=? AND revision=?
+ON CONFLICT(credential_id) DO UPDATE SET owner=excluded.owner,expires_at=excluded.expires_at WHERE leases.expires_at<=?`, owner, until.Unix(), credential.ID, credential.Revision, time.Now().Unix())
+	if err != nil {
+		return false, err
+	}
+	count, err := result.RowsAffected()
+	if err != nil || count == 1 {
+		return count == 1, err
+	}
+	var revision int64
+	if err := s.db.QueryRowContext(ctx, "SELECT revision FROM credentials WHERE id=?", credential.ID).Scan(&revision); errors.Is(err, sql.ErrNoRows) || err == nil && revision != credential.Revision {
+		return false, ErrCredentialChanged
+	} else if err != nil {
+		return false, err
+	}
+	return false, nil
 }
 
 func (s *Store) acquire(ctx context.Context, id int64, owner string, until time.Time) (bool, error) {

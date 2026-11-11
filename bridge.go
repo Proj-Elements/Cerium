@@ -182,6 +182,10 @@ func (b *Bridge) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		}
 		c, err := b.configure(ctx, job)
 		if err != nil {
+			if errors.Is(err, errSynchronizationBusy) {
+				b.respondError(w, 503, "site_busy", "configure_site", job.JobID)
+				return
+			}
 			b.respondError(w, 409, "site_configuration_conflict", "configure_site", job.JobID)
 			return
 		}
@@ -189,6 +193,10 @@ func (b *Bridge) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		if job.Operation == "sync" {
 			if job.RefreshModels {
 				if err := b.store.RefreshModelProbesForJob(ctx, c.ID, job.JobID); err != nil {
+					if errors.Is(err, errSynchronizationBusy) {
+						b.respondError(w, 503, "site_busy", "model_discovery", job.JobID)
+						return
+					}
 					b.respondError(w, 409, "model_refresh_conflict", "model_discovery", job.JobID)
 					return
 				}
@@ -374,6 +382,9 @@ func (b *Bridge) configure(ctx context.Context, j BridgeJob) (Credential, error)
 	}
 	if j.Operation == "delete" {
 		if oldID.Valid {
+			if err = credentialIdle(ctx, tx, oldID.Int64); err != nil {
+				return c, err
+			}
 			if err = retainProbeCleanup(ctx, tx, oldID.Int64); err != nil {
 				return c, err
 			}
@@ -390,6 +401,9 @@ func (b *Bridge) configure(ctx context.Context, j BridgeJob) (Credential, error)
 			return c, err
 		}
 		if old.URL != c.URL || old.Type != c.Type || old.Account != c.Account || old.Password != c.Password || old.AccessToken != c.AccessToken || old.UserID != c.UserID {
+			if err = credentialIdle(ctx, tx, c.ID); err != nil {
+				return c, err
+			}
 			if err = retainProbeCleanup(ctx, tx, c.ID); err != nil {
 				return c, err
 			}

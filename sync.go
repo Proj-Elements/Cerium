@@ -107,7 +107,7 @@ func (s *Syncer) syncOne(ctx context.Context, c Credential, providers Registry, 
 	result = Result{CredentialID: c.ID, Name: c.Name, URL: c.URL, Type: c.Type, CheckedAt: time.Now().UTC(), Refresh: "not_attempted"}
 	defer func() { diagnoseResult(&result, err) }()
 	owner := rand.Text()
-	acquired, err := s.Store.acquire(ctx, c.ID, owner, time.Now().Add(siteTimeout+30*time.Second))
+	acquired, err := s.Store.acquireCredential(ctx, c, owner, time.Now().Add(siteTimeout+30*time.Second))
 	if err != nil {
 		return result, atStage("acquire_lease", err)
 	}
