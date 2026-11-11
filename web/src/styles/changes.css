@@ -152,3 +152,27 @@
   background: var(--surface-secondary);
   color: var(--muted);
 }
+.change-catalog-details {
+  min-width: 0;
+  max-width: 100%;
+}
+.change-catalog-details summary {
+  cursor: var(--cursor-interactive);
+}
+.change-catalog-details ul {
+  max-height: 18rem;
+  overflow: auto;
+  padding-left: 1.25rem;
+}
+.change-catalog-details li {
+  overflow-wrap: anywhere;
+}
+.change-detail.prices li {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  white-space: normal;
+}
+.change-catalog-details .old-value {
+  color: var(--muted);
+}
