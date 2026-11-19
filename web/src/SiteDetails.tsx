@@ -25,11 +25,13 @@ type DetailFilters = {
 
 export function SiteDetails({
   site,
+  interval = 900,
   close,
   initialGroup,
   navigation,
 }: {
   site: Site;
+  interval?: number;
   close: () => void;
   initialGroup?: string;
   navigation?: DetailFilters & {
@@ -271,7 +273,7 @@ export function SiteDetails({
                     返回分组
                   </Button>
                   <span>
-                    {site.name} <span>/ 可用模型</span>
+                    {site.name} <span>/ 模型列表</span>
                   </span>
                   <Modal.CloseTrigger aria-label="关闭模型详情">
                     <img src={closeIcon} alt="" width="16" height="16" />
@@ -280,6 +282,8 @@ export function SiteDetails({
                 <Models
                   group={group}
                   type={site.type}
+                  catalogTime={site.fetched_at}
+                  interval={interval}
                   key={group.id}
                   filter={
                     navigation

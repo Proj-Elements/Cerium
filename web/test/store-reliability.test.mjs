@@ -607,6 +607,46 @@ test("legacy password configs keep their snapshot after cosmetic edits", (t) => 
   assert.equal(store.nextJob(), undefined);
 });
 
+test("manual-site metadata edits preserve catalog time until the catalog facts change", (t) => {
+  const store = fixture(t);
+  const manual = {
+    ...config,
+    type: "others",
+    manual_catalog: {
+      groups: [{ id: "default", name: "Default", multiplier: 1 }],
+    },
+  };
+  const id = store.save(manual);
+  const originalTime = "2020-01-01T00:00:00.000Z";
+  store.db
+    .prepare("UPDATE sites SET fetched_at=? WHERE id=?")
+    .run(originalTime, id);
+  const snapshot = store.row(id).snapshot;
+  store.save(
+    {
+      ...manual,
+      name: "Renamed",
+      description: "New description",
+      enabled: false,
+    },
+    id,
+  );
+  assert.equal(store.row(id).fetched_at, originalTime);
+  assert.equal(store.row(id).snapshot, snapshot);
+  assert.equal(store.changes(true).length, 0);
+  store.save(
+    {
+      ...manual,
+      manual_catalog: {
+        groups: [{ id: "default", name: "Default", multiplier: 2 }],
+      },
+    },
+    id,
+  );
+  assert.ok(Date.parse(store.row(id).fetched_at) > Date.parse(originalTime));
+  assert.equal(store.changes(true).length, 1);
+});
+
 test("manual-site cosmetic edits retain a single pending provider deletion", (t) => {
   const store = fixture(t),
     id = store.save(config),

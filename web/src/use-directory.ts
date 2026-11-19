@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useRef, useState } from "react";
-import { api, message } from "./api";
+import { api, assertDirectory, message } from "./api";
 import type { Directory } from "./types";
 
 export function useDirectory() {
@@ -30,6 +30,7 @@ export function useDirectory() {
       active = api<Directory>("/api/sites", "GET", undefined, 15000, {
         signal: controller.signal,
         conditional: true,
+        validate: assertDirectory,
       })
         .then((result) => {
           if (stopped) return;

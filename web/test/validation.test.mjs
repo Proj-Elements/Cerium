@@ -53,3 +53,22 @@ test("catalog group and price entries reject non-objects with client errors", ()
   assert.equal(result.groups[0].prices[0].output, null);
   assert.deepEqual(catalog({ scope: "public", groups: [] }).groups, []);
 });
+
+test("catalog rejects duplicate prices for one model instead of choosing an arbitrary entry", () => {
+  assert.throws(
+    () =>
+      catalog({
+        scope: "public",
+        groups: [
+          {
+            ...group,
+            prices: [
+              { model: "same-model", mode: "tokens", input: 1 },
+              { model: "same-model", mode: "tokens", input: 100 },
+            ],
+          },
+        ],
+      }),
+    { message: "Duplicate model price", status: 400 },
+  );
+});

@@ -7,7 +7,13 @@ import { formatNumber } from "./number-format";
 import type { Site } from "./types";
 import "./model-comparison.css";
 
-export function ModelComparison({ sites }: { sites: Site[] }) {
+export function ModelComparison({
+  sites,
+  interval = 900,
+}: {
+  sites: Site[];
+  interval?: number;
+}) {
   const [open, setOpen] = useState(false);
   const models = useMemo(
     () => (open ? comparisonModels(sites) : []),
@@ -22,19 +28,36 @@ export function ModelComparison({ sites }: { sites: Site[] }) {
   const listId = useId();
   const selected = model || models[0] || "";
   const count = (value: string) => (value.trim() ? Number(value) : NaN);
+  const now = Math.floor(Date.now() / 60000) * 60000;
   const rows = useMemo(
     () =>
       open
-        ? compareModelCosts(sites, {
-            model: selected,
-            mode: mode === "request" ? "request" : "tokens",
-            currency: currency === "USD" ? "USD" : "CNY",
-            inputTokens: count(input),
-            outputTokens: count(output),
-            requests: count(requests),
-          })
+        ? compareModelCosts(
+            sites,
+            {
+              model: selected,
+              mode: mode === "request" ? "request" : "tokens",
+              currency: currency === "USD" ? "USD" : "CNY",
+              inputTokens: count(input),
+              outputTokens: count(output),
+              requests: count(requests),
+            },
+            interval,
+            now,
+          )
         : [],
-    [open, sites, selected, mode, currency, input, output, requests],
+    [
+      open,
+      sites,
+      selected,
+      mode,
+      currency,
+      input,
+      output,
+      requests,
+      interval,
+      now,
+    ],
   );
   const known = rows.filter((row) => row.cost != null).length;
   if (
@@ -160,12 +183,29 @@ export function ModelComparison({ sites }: { sites: Site[] }) {
                         )}
                         {row.snapshotAt ? (
                           <time dateTime={row.snapshotAt}>
+                            报价采集：
                             {new Date(row.snapshotAt).toLocaleString("zh-CN")}
                           </time>
                         ) : (
                           "无采集时间"
                         )}
-                        {row.stale && <small>最近成功快照，当前同步异常</small>}
+                        {row.modelsSnapshotAt &&
+                          row.modelsSnapshotAt !== row.snapshotAt && (
+                            <small>
+                              模型采集：
+                              <time dateTime={row.modelsSnapshotAt}>
+                                {new Date(row.modelsSnapshotAt).toLocaleString(
+                                  "zh-CN",
+                                )}
+                              </time>
+                            </small>
+                          )}
+                        {row.modelsStale && (
+                          <small>模型列表较旧或时间未知，请向站点确认</small>
+                        )}
+                        {row.syncStale && (
+                          <small>最近成功快照，当前同步尚未确认</small>
+                        )}
                       </td>
                     </tr>
                   ))}

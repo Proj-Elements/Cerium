@@ -10,7 +10,7 @@ import {
   TextArea,
   TextField,
 } from "@heroui/react";
-import { api, APIError, message } from "./api";
+import { api, APIError, assertDirectory, message } from "./api";
 import { Field, Select } from "./ui";
 import closeIcon from "./assets/figma-close.svg";
 import type { Directory, Site } from "./types";
@@ -65,8 +65,18 @@ export function SiteEditor({
     if (busy || !currentSite) return;
     setBusy(true);
     try {
-      const directory = await api<Directory>(`${base}/sites`),
-        latest = directory.sites.find((entry) => entry.id === currentSite.id);
+      const directory = await api<Directory>(
+        `${base}/sites`,
+        "GET",
+        undefined,
+        15000,
+        {
+          validate: assertDirectory,
+        },
+      );
+      const latest = directory.sites.find(
+        (entry) => entry.id === currentSite.id,
+      );
       if (!latest) throw new Error("站点已被删除，请关闭编辑器并刷新目录。");
       setCurrentSite(latest);
       setValue(draft(latest));
@@ -110,10 +120,21 @@ export function SiteEditor({
       saved();
       close();
     } catch (failure) {
-      if (failure instanceof APIError && failure.status === 409) {
+      const code =
+        failure instanceof APIError ? failure.context?.code : undefined;
+      if (
+        failure instanceof APIError &&
+        failure.status === 409 &&
+        currentSite &&
+        code === "stale_revision"
+      ) {
         setConflict(true);
         setError(
           "站点配置已发生变化，本次修改尚未保存。草稿已保留，请先核对并载入最新配置。",
+        );
+      } else if (code === "duplicate_identity") {
+        setError(
+          "该 URL、站点类型和账号或用户 ID 的站点已存在，请修改后重试。",
         );
       } else setError(message(failure));
     } finally {

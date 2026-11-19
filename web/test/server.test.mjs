@@ -567,7 +567,10 @@ test("token validation, identity changes and switching authentication modes", as
     );
   }
   const id = f.store.save(tokenConfig);
-  assert.throws(() => f.store.save(tokenConfig), { status: 409 });
+  assert.throws(
+    () => f.store.save(tokenConfig),
+    (error) => error.status === 409 && error.code === "duplicate_identity",
+  );
   const other = f.store.save({ ...tokenConfig, user_id: 43 });
   f.store.remove(other);
   const oldJob = f.store.nextJob();
@@ -596,6 +599,24 @@ test("token validation, identity changes and switching authentication modes", as
   f.store.save({ ...config, type: "others", account: "", password: "" }, id);
   assert.equal(JSON.parse(f.store.row(id).config).access_token, "");
   assert.equal(JSON.parse(f.store.nextJob().payload).operation, "delete");
+});
+
+test("duplicate identities and stale edits return distinct conflict codes without changing data", async (t) => {
+  const f = await fixture(t);
+  await f.login();
+  const id = f.store.save(config);
+  const duplicate = await f.request(f.base + "/sites", "POST", config);
+  assert.equal(duplicate.status, 409);
+  assert.equal((await duplicate.json()).code, "duplicate_identity");
+  f.store.save({ ...config, name: "Newer title" }, id);
+  const outdated = await f.request(`${f.base}/sites/${id}`, "PUT", {
+    ...config,
+    revision: 1,
+  });
+  assert.equal(outdated.status, 409);
+  assert.equal((await outdated.json()).code, "stale_revision");
+  assert.equal(f.store.sites(true).length, 1);
+  assert.equal(f.store.sites(true)[0].name, "Newer title");
 });
 
 test("legacy password configs remain editable without discarding their snapshot", async (t) => {
