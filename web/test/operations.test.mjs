@@ -72,8 +72,284 @@ async function fixture(t, options = {}) {
     await app.close();
     rmSync(dir, { recursive: true, force: true });
   });
-  return { ...app, base, logs, request, login, origin };
+  return {
+    ...app,
+    base,
+    logs,
+    request,
+    login,
+    origin,
+    get cookie() {
+      return cookie;
+    },
+  };
 }
+
+function streamedRequest(t, app, path, raw, headers = {}) {
+  const started = once(app.server, "request");
+  const request = httpRequest(app.origin + path, {
+    method: "POST",
+    headers: {
+      "Content-Type": "application/json",
+      "Content-Length": Buffer.byteLength(raw),
+      Origin: app.origin,
+      Cookie: app.cookie,
+      "X-Cerium-Admin": "1",
+      ...headers,
+    },
+  });
+  t.after(() => request.destroy());
+  const finished = new Promise((resolve, reject) => {
+    request.once("response", (response) => {
+      const chunks = [];
+      response.on("data", (chunk) => chunks.push(chunk));
+      response.once("end", () =>
+        resolve({ status: response.statusCode, bytes: Buffer.concat(chunks) }),
+      );
+    });
+    request.once("error", reject);
+  });
+  request.write(raw.slice(0, 1));
+  return { request, started, finished };
+}
+
+test(
+  "an interrupted import releases maintenance without changing data or leaving dispatch paused",
+  { timeout: 15000 },
+  async (t) => {
+    const app = await fixture(t);
+    await app.login();
+    app.store.save(config);
+    const before = app.store.exportData().sites;
+    const raw = JSON.stringify(app.store.exportData());
+    const slow = streamedRequest(t, app, `${app.base}/data/import`, raw);
+    const interrupted = assert.rejects(slow.finished);
+    await slow.started;
+    slow.request.destroy();
+    await interrupted;
+    for (let attempt = 0; attempt < 20; attempt++) {
+      if (app.logs.some((entry) => entry.includes('"stage":"backup_import"')))
+        break;
+      await new Promise((resolve) => setTimeout(resolve, 5));
+    }
+    assert.ok(
+      app.logs.some((entry) => entry.includes('"stage":"backup_import"')),
+    );
+    assert.deepEqual(app.store.exportData().sites, before);
+    const readiness = await (await app.request("/readyz")).json();
+    assert.equal(readiness.maintenance, null);
+    assert.equal(readiness.dispatcher.paused, false);
+    assert.equal(
+      (
+        await app.request(`${app.base}/settings`, "PUT", {
+          sync_interval_seconds: 120,
+        })
+      ).status,
+      200,
+    );
+  },
+);
+
+test(
+  "ordinary export drains a worker delivery before reading and resumes dispatch afterwards",
+  { timeout: 15000 },
+  async (t) => {
+    let release;
+    const delivered = new Promise((resolve) => {
+      release = resolve;
+    });
+    const app = await fixture(t, {
+      fetchWorker: async () => {
+        await delivered;
+        return new Response("{}", { status: 200 });
+      },
+    });
+    t.after(() => release());
+    await app.login();
+    app.store.save(config);
+    const dispatch = app.tick();
+    const started = once(app.server, "request");
+    let completed = false;
+    const backup = app
+      .request(`${app.base}/data/export`, "POST")
+      .then((response) => {
+        completed = true;
+        return response;
+      });
+    await started;
+    await new Promise((resolve) => setTimeout(resolve, 150));
+    const completedBeforeDelivery = completed;
+    release();
+    await dispatch;
+    const response = await backup;
+    assert.equal(response.status, 200);
+    await response.arrayBuffer();
+    assert.equal(completedBeforeDelivery, false);
+    const readiness = await (await app.request("/readyz")).json();
+    assert.equal(readiness.dispatcher.paused, false);
+  },
+);
+
+test(
+  "a worker already delivering can finish its callback while export waits for it",
+  { timeout: 15000 },
+  async (t) => {
+    let release;
+    const proceed = new Promise((resolve) => {
+      release = resolve;
+    });
+    let callbackStatus;
+    const app = await fixture(t, {
+      fetchWorker: async (_url, options) => {
+        const job = JSON.parse(options.body);
+        await proceed;
+        const result = {
+          job_id: job.job_id,
+          site_id: job.site_id,
+          config_revision: job.config_revision,
+          url: job.url,
+          type: job.type,
+          checked_at: new Date().toISOString(),
+          error: "Delivery completed before backup",
+        };
+        const timestamp = String(Math.floor(Date.now() / 1000));
+        const callback = await app.request(
+          "/api/webhooks/sync",
+          "POST",
+          result,
+          {
+            "X-Cerium-Timestamp": timestamp,
+            "X-Cerium-Signature": sign(
+              secret,
+              timestamp,
+              JSON.stringify(result),
+            ),
+            "X-Cerium-Event": "sync.completed",
+          },
+        );
+        callbackStatus = callback.status;
+        return new Response("{}", { status: callback.ok ? 200 : 503 });
+      },
+    });
+    await app.login();
+    const id = app.store.save(config);
+    const dispatch = app.tick();
+    const started = once(app.server, "request");
+    const backup = app.request(`${app.base}/data/export`, "POST");
+    await started;
+    release();
+    await dispatch;
+    const response = await backup;
+    assert.equal(response.status, 200);
+    const data = await response.json();
+    assert.equal(callbackStatus, 200);
+    assert.equal(
+      data.sites.find((site) => site.id === id).error,
+      "Delivery completed before backup",
+    );
+  },
+);
+
+for (const format of ["json", "sqlite"]) {
+  test(
+    `ordinary ${format} exports wait for already admitted callback writes`,
+    { timeout: 15000 },
+    async (t) => {
+      const app = await fixture(t);
+      await app.login();
+      const id = app.store.save(config),
+        job = app.store.nextJob(),
+        raw = JSON.stringify({
+          job_id: job.id,
+          site_id: id,
+          config_revision: job.revision,
+          url: config.url,
+          type: config.type,
+          checked_at: new Date().toISOString(),
+          error: "Callback included before export",
+        }),
+        timestamp = String(Math.floor(Date.now() / 1000));
+      const slow = streamedRequest(t, app, "/api/webhooks/sync", raw, {
+        "X-Cerium-Timestamp": timestamp,
+        "X-Cerium-Signature": sign(secret, timestamp, raw),
+        "X-Cerium-Event": "sync.completed",
+      });
+      await slow.started;
+      const started = once(app.server, "request");
+      let settled = false;
+      const exported = app
+        .request(`${app.base}/data/export?format=${format}`, "POST")
+        .then((response) => {
+          settled = true;
+          return response;
+        });
+      await started;
+      await new Promise((resolve) => setTimeout(resolve, 150));
+      const completedBeforeCallback = settled;
+      slow.request.end(raw.slice(1));
+      assert.equal((await slow.finished).status, 200);
+      const response = await exported;
+      assert.equal(response.status, 200);
+      const { parseBackup } = await import("../server/backup.mjs");
+      const data = parseBackup(
+        Buffer.from(await response.arrayBuffer()),
+        format,
+      );
+      assert.equal(
+        completedBeforeCallback,
+        false,
+        "export must wait for the incomplete callback",
+      );
+      assert.equal(data.sites[0].error, "Callback included before export");
+    },
+  );
+}
+
+test(
+  "a streamed import blocks new writes, callbacks and discovery and releases maintenance on success or failure",
+  { timeout: 15000 },
+  async (t) => {
+    const app = await fixture(t, { resolveIcon: async () => ({ icons: [] }) });
+    await app.login();
+    const id = app.store.save(config);
+    const raw = JSON.stringify(app.store.exportData());
+    const slow = streamedRequest(t, app, `${app.base}/data/import`, raw);
+    await slow.started;
+    await new Promise((resolve) => setImmediate(resolve));
+    const blocked = await app.request(`${app.base}/settings`, "PUT", {
+      sync_interval_seconds: 120,
+    });
+    const intervalDuringImport = app.store.interval;
+    const callback = await app.request("/api/webhooks/sync", "POST", {});
+    const icon = await app.request(`/api/sites/${id}/icon`);
+    const overlappingExport = await app.request(
+      `${app.base}/data/export`,
+      "POST",
+    );
+    assert.equal((await app.request("/healthz")).status, 200);
+    assert.equal((await app.request("/api/sites")).status, 200);
+    slow.request.end(raw.slice(1));
+    assert.equal((await slow.finished).status, 200);
+    assert.equal(blocked.status, 409);
+    assert.equal(intervalDuringImport, 900);
+    assert.equal(callback.status, 503);
+    assert.equal(icon.status, 503);
+    assert.equal(overlappingExport.status, 409);
+    assert.equal(
+      (await app.request(`${app.base}/data/import`, "POST", {})).status,
+      400,
+    );
+    assert.equal(
+      (
+        await app.request(`${app.base}/settings`, "PUT", {
+          sync_interval_seconds: 120,
+        })
+      ).status,
+      200,
+    );
+    assert.equal(app.store.interval, 120);
+  },
+);
 
 test("directory responses negotiate gzip and conditional requests and invalidate on content change", async (t) => {
   const app = await fixture(t);
