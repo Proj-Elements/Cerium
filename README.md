@@ -168,10 +168,18 @@ catalog fetch. `show` separates `last_run`, `fetched_at`, and the last good
   specifically for the group. SQLite tracks creation, reconciliation, model
   retrieval, and deletion across restarts. Keys request a one-day expiry and a
   tiny positive spending cap; Cerium never calls a billable inference endpoint.
+- Before starting new public-group probes, Cerium checks `/api/v1/auth/me` once
+  per run. An explicitly reported standard-mode account with zero or negative
+  balance defers new probes without creating keys or recording failed attempts.
+  Simple mode and panels that do not report the mode still use the gateway's
+  result. Cached model lists remain available.
 - At most four new groups are probed per synchronization (`CERIUM_MODEL_PROBES_PER_RUN`,
   range 1-20). Later rounds continue remaining groups. Successful or failed
   attempts are retained; neither automatic retries nor restarts recreate keys
   or repeat completed/interrupted model requests. Deletion retries are allowed.
+  Admin synchronization warnings report the recorded failure categories. If a
+  group already failed, resolve the upstream condition and use **刷新模型列表**
+  explicitly; a normal sync will not replay it.
 
 The ordinary group DTO deliberately does not expose the administrative model
 allowlist. Cerium does not guess models from platform names, use admin APIs,

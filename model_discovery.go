@@ -8,11 +8,13 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"net"
 	"net/http"
 	"net/url"
 	"os"
 	"slices"
 	"strconv"
+	"strings"
 	"time"
 )
 
@@ -28,6 +30,28 @@ type probeKey struct {
 	GroupID int64  `json:"group_id"`
 	Name    string `json:"name"`
 	Key     string `json:"key"`
+}
+
+func (p *sub2API) canStartModelProbe(ctx context.Context) bool {
+	deadline, limited := ctx.Deadline()
+	return ctx.Err() == nil && (!limited || time.Until(deadline) >= 2*p.client.client.Timeout+10*time.Second)
+}
+
+// A zero balance only proves a public standard group is blocked when the
+// upstream confirms standard mode. Simple mode skips the balance check, and
+// forks that omit run_mode still get their one gateway attempt.
+func (p *sub2API) modelBalanceBlocked(ctx context.Context, session *Session) bool {
+	ctx, cancel := context.WithTimeout(ctx, 3*time.Second)
+	defer cancel()
+	response, err := p.client.request(ctx, session, http.MethodGet, "/api/v1/auth/me", nil)
+	if err != nil {
+		return false
+	}
+	profile, err := decodeData[struct {
+		RunMode string   `json:"run_mode"`
+		Balance *float64 `json:"balance"`
+	}](response)
+	return err == nil && profile.RunMode == "standard" && profile.Balance != nil && *profile.Balance <= 0
 }
 
 func (p *sub2API) saveProbe(ctx context.Context, probe *modelProbe) error {
@@ -88,7 +112,9 @@ func (p *sub2API) discoverModels(ctx context.Context, session *Session, catalog 
 	if n, err := strconv.Atoi(os.Getenv("CERIUM_MODEL_PROBES_PER_RUN")); err == nil && n >= 1 && n <= 20 {
 		limit = n
 	}
-	pending, failed, cleanup := 0, 0, 0
+	pending, failed, cleanup, balanceDeferred := 0, 0, 0, 0
+	balanceChecked, balanceBlocked := false, false
+	failureReasons := map[string]int{}
 	for i := range catalog.Groups {
 		g := &catalog.Groups[i]
 		probe := probes[g.ID]
@@ -103,12 +129,15 @@ WHERE credential_id=? AND source=? AND group_id=?`, p.credential.ID, source, g.I
 			pending++
 			continue
 		}
-		if probe == nil && limit > 0 && ctx.Err() == nil {
-			if deadline, ok := ctx.Deadline(); ok && time.Until(deadline) < 2*p.client.client.Timeout+10*time.Second {
-				limit = 0
-			}
+		if probe == nil && limit > 0 && p.publicOnly && !balanceChecked && p.canStartModelProbe(ctx) {
+			balanceChecked = true
+			balanceBlocked = p.modelBalanceBlocked(ctx, session)
 		}
-		if probe == nil && limit > 0 && ctx.Err() == nil {
+		if probe == nil && balanceBlocked {
+			balanceDeferred++
+			continue
+		}
+		if probe == nil && limit > 0 && p.canStartModelProbe(ctx) {
 			limit--
 			probe = &modelProbe{Source: source, GroupID: g.ID, State: "creating", Name: "cerium-models-" + rand.Text(), Secret: "sk-" + rand.Text()}
 			if err := p.saveProbe(ctx, probe); err != nil {
@@ -154,6 +183,7 @@ WHERE credential_id=? AND source=? AND group_id=?`, p.credential.ID, source, g.I
 			g.ModelsKnown, g.ModelsSource, g.ModelsFetchedAt = true, "gateway_once", probe.FetchedAt
 		} else {
 			failed++
+			failureReasons[savedModelFailureReason(probe.Error)]++
 		}
 	}
 	for _, probe := range probes {
@@ -164,8 +194,16 @@ WHERE credential_id=? AND source=? AND group_id=?`, p.credential.ID, source, g.I
 	if pending > 0 {
 		catalog.Warnings = append(catalog.Warnings, fmt.Sprintf("one-time gateway model discovery pending for %d groups; continuing in later sync rounds", pending))
 	}
+	if balanceDeferred > 0 {
+		catalog.Warnings = append(catalog.Warnings, fmt.Sprintf("one-time gateway model discovery deferred for %d groups: account balance is not positive; no key or model request was attempted", balanceDeferred))
+	}
 	if failed > 0 {
-		catalog.Warnings = append(catalog.Warnings, fmt.Sprintf("one-time gateway model discovery unavailable for %d groups; saved failures will not create new keys", failed))
+		reasons := make([]string, 0, len(failureReasons))
+		for reason, count := range failureReasons {
+			reasons = append(reasons, fmt.Sprintf("%s=%d", reason, count))
+		}
+		slices.Sort(reasons)
+		catalog.Warnings = append(catalog.Warnings, fmt.Sprintf("one-time gateway model discovery unavailable for %d groups (%s); resolve the upstream condition and explicitly refresh models; saved attempts are not retried", failed, strings.Join(reasons, ", ")))
 	}
 	if cleanup > 0 {
 		catalog.Warnings = append(catalog.Warnings, fmt.Sprintf("%d temporary model keys still need reconciliation or deletion; cleanup will retry", cleanup))
@@ -225,7 +263,7 @@ func (p *sub2API) resumeProbe(ctx context.Context, session *Session, probe *mode
 			} `json:"data"`
 		}
 		if err != nil || status != http.StatusOK || json.Unmarshal(data, &list) != nil || list.Data == nil || len(list.Data) > 10000 {
-			probe.Error = fmt.Sprintf("gateway model discovery failed (HTTP %d); not repeating", status)
+			probe.Error = fmt.Sprintf("gateway model discovery failed (HTTP %d; %s); not repeating", status, modelFailureReason(data, status, err))
 		} else {
 			models := make([]string, 0, len(list.Data))
 			for _, m := range list.Data {
@@ -257,4 +295,77 @@ func (p *sub2API) resumeProbe(ctx context.Context, session *Session, probe *mode
 		}
 	}
 	return nil
+}
+
+var upstreamModelFailureCodes = []string{
+	"INSUFFICIENT_BALANCE", "API_KEY_QUOTA_EXHAUSTED", "API_KEY_EXPIRED",
+	"SUBSCRIPTION_NOT_FOUND", "SUBSCRIPTION_INVALID", "USAGE_LIMIT_EXCEEDED",
+	"ACCESS_DENIED", "GROUP_NOT_ALLOWED", "GROUP_DISABLED", "GROUP_NOT_FOUND",
+	"INVALID_API_KEY", "USER_INACTIVE", "insufficient_quota",
+}
+
+func modelFailureReason(data []byte, status int, err error) string {
+	if err != nil {
+		var network net.Error
+		switch {
+		case errors.Is(err, context.DeadlineExceeded), errors.As(err, &network) && network.Timeout():
+			return "timeout"
+		case errors.Is(err, context.Canceled):
+			return "canceled"
+		default:
+			return "transport_or_response_failure"
+		}
+	}
+	var failure struct {
+		Code  string `json:"code"`
+		Error struct {
+			Code string `json:"code"`
+			Type string `json:"type"`
+		} `json:"error"`
+	}
+	if json.Unmarshal(data, &failure) == nil {
+		for _, code := range []string{failure.Code, failure.Error.Code, failure.Error.Type} {
+			if slices.Contains(upstreamModelFailureCodes, code) {
+				return code
+			}
+		}
+	}
+	switch status {
+	case http.StatusForbidden:
+		return "access_denied"
+	case http.StatusUnauthorized:
+		return "authentication"
+	case http.StatusTooManyRequests:
+		return "rate_limited"
+	case http.StatusOK:
+		return "invalid_response"
+	default:
+		return "upstream_http"
+	}
+}
+
+func savedModelFailureReason(message string) string {
+	switch message {
+	case "no matching key after interrupted creation; not recreating":
+		return "key_creation_failed"
+	case "key creation did not complete; no automatic recreation":
+		return "key_creation_unconfirmed"
+	case "model response interrupted; not repeating the one-time request":
+		return "interrupted"
+	case "invalid gateway model ID":
+		return "invalid_response"
+	case "gateway model discovery failed (HTTP 403); not repeating":
+		return "access_denied_check_balance_or_permissions"
+	case "gateway model discovery failed (HTTP 0); not repeating":
+		return "transport_failure"
+	}
+	_, reason, _ := strings.Cut(message, "; ")
+	reason, valid := strings.CutSuffix(reason, "); not repeating")
+	if valid && (slices.Contains(upstreamModelFailureCodes, reason) || slices.Contains([]string{
+		"timeout", "canceled", "transport_or_response_failure", "access_denied",
+		"authentication", "rate_limited", "invalid_response", "upstream_http",
+	}, reason)) {
+		return reason
+	}
+	return "discovery_unavailable"
 }
