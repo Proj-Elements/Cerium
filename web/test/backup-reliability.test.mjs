@@ -56,6 +56,61 @@ function saveIcon(store, id, image) {
   );
 }
 
+test("legacy duplicate quotes remain restorable in ordinary and complete backups", async (t) => {
+  const { store } = fixture(t);
+  const prices = [
+    { model: "duplicate", mode: "tokens", input: 1 },
+    { model: "duplicate", mode: "tokens", input: 100 },
+  ];
+  for (const config of [manual, provider]) {
+    const id = store.save(config);
+    const catalog = {
+      scope: config.type === "others" ? "manual" : "public",
+      groups: [
+        {
+          id: "default",
+          name: "Default",
+          models: ["duplicate"],
+          models_known: true,
+          prices,
+        },
+      ],
+    };
+    const saved = JSON.parse(store.row(id).config);
+    if (config.type === "others") saved.manual_catalog = catalog;
+    store.db
+      .prepare("UPDATE sites SET config=?,snapshot=?,fetched_at=? WHERE id=?")
+      .run(
+        JSON.stringify(saved),
+        JSON.stringify(catalog),
+        new Date().toISOString(),
+        id,
+      );
+  }
+  for (const format of ["json", "sqlite"]) {
+    const parsed = await parseBackupAsync(
+      await serializeBackup(store, format),
+      format,
+    );
+    assert.equal(parsed.sites.length, 2);
+    assert.ok(
+      parsed.sites.every(
+        (entry) => entry.snapshot.groups[0].prices.length === 2,
+      ),
+    );
+    store.importData(parsed);
+  }
+  const recovered = await parseRecoveryDatabase(
+    await exportRecoveryDatabase(store),
+  );
+  assert.equal(recovered.sites.length, 2);
+  assert.ok(
+    recovered.sites.every(
+      (entry) => JSON.parse(entry.snapshot).groups[0].prices.length === 2,
+    ),
+  );
+});
+
 test("maximum-size catalogs retain every multiplier model and price event in backups and recovery", async (t) => {
   const { store } = fixture(t),
     id = store.save(manual);

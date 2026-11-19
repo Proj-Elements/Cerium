@@ -43,7 +43,10 @@ test("stale edits retain the draft until the admin explicitly loads the latest c
         current = { ...site, revision: 11, name: "其他管理员已更新的名称" };
         await route.fulfill({
           status: 409,
-          json: { error: "Site configuration changed; reload before saving" },
+          json: {
+            error: "Site configuration changed; reload before saving",
+            code: "stale_revision",
+          },
         });
       } else {
         current = { ...current, ...submitted, revision: 12 };
@@ -74,6 +77,58 @@ test("stale edits retain the draft until the admin explicitly loads the latest c
   await expect(
     page.getByRole("heading", { name: "合并后的名称" }),
   ).toBeVisible();
+});
+
+test("duplicate identity errors keep a new site editor editable", async ({
+  page,
+}) => {
+  const { base, directory } = await login(page);
+  const existing = directory.sites.find(
+    (entry: { type: string }) => entry.type === "newapi",
+  );
+  expect(existing).toBeTruthy();
+  const submissions: Record<string, unknown>[] = [];
+  await page.route(
+    (url) => url.pathname === `${base}/sites`,
+    async (route) => {
+      if (route.request().method() !== "POST") return route.continue();
+      const submitted = route.request().postDataJSON();
+      submissions.push(submitted);
+      if (submitted.url === existing.url)
+        return route.fulfill({
+          status: 409,
+          json: {
+            error: "This URL, provider and account or user ID already exist",
+            code: "duplicate_identity",
+          },
+        });
+      return route.fulfill({ status: 201, json: { id: "new-site" } });
+    },
+  );
+  await page.getByRole("button", { name: "添加站点", exact: true }).click();
+  const editor = page.getByRole("dialog");
+  await editor.getByRole("textbox", { name: /^站名/ }).fill("重复身份测试");
+  await editor.getByRole("button", { name: /站点类型/ }).click();
+  await page.getByRole("option", { name: "NewAPI", exact: true }).click();
+  await editor.getByRole("textbox", { name: "站点 URL" }).fill(existing.url);
+  await editor
+    .getByRole("textbox", { name: "账号 / 邮箱" })
+    .fill("duplicate@example");
+  await editor.getByRole("textbox", { name: "密码" }).fill("fixture-password");
+  await editor.getByRole("button", { name: "保存并同步", exact: true }).click();
+  await expect(editor.getByRole("alert")).toContainText("已存在");
+  await expect(
+    editor.getByRole("button", { name: "载入最新配置" }),
+  ).toHaveCount(0);
+  await expect(
+    editor.getByRole("button", { name: "保存并同步", exact: true }),
+  ).toBeEnabled();
+  await editor
+    .getByRole("textbox", { name: "站点 URL" })
+    .fill("https://duplicate-recovered.example");
+  await editor.getByRole("button", { name: "保存并同步", exact: true }).click();
+  await expect(editor).toHaveCount(0);
+  expect(submissions).toHaveLength(2);
 });
 
 test("admin history paginates beyond the first page and resets pagination when searching", async ({

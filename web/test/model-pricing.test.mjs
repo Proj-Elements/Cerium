@@ -3,6 +3,7 @@ import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 import {
   createPriceMatcher,
+  indexModelPrices,
   modelBrand,
   resolveModelPrice,
 } from "../src/model-pricing.ts";
@@ -20,6 +21,20 @@ const catalog = (models) => ({
   source: "test",
   fetchedAt: "2026-11-02",
   sha256: "test",
+});
+
+test("legacy site prices expose duplicates without selecting the first or last quote", () => {
+  const normal = { model: "normal", mode: "tokens", input: 0 };
+  const prices = [
+    { model: "dup", mode: "tokens", input: 1 },
+    { model: " dup ", mode: "tokens", input: 100 },
+    { model: "dup", mode: "request", request: 3 },
+    normal,
+  ];
+  const indexed = indexModelPrices(prices);
+  assert.equal(indexed.get("dup"), null);
+  assert.equal(indexed.get("normal"), normal);
+  assert.equal(indexed.get("missing"), undefined);
 });
 
 test("complete model and provider-route exact matches always win", () => {

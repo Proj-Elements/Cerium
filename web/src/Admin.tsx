@@ -6,7 +6,7 @@ import {
   type FormEvent,
 } from "react";
 import { Button, Card, Modal } from "@heroui/react";
-import { api, APIError, clearAPICache, message } from "./api";
+import { api, APIError, assertDirectory, clearAPICache, message } from "./api";
 import { createLatestRequest } from "./latest-request";
 import { Field, Glyph, Header } from "./ui";
 import { SiteDetails } from "./Catalog";
@@ -66,6 +66,7 @@ export default function Admin() {
         api<Directory>(`${base}/sites`, "GET", undefined, 15000, {
           signal,
           conditional: true,
+          validate: assertDirectory,
         }),
       );
       if (!result.current) return false;
@@ -405,6 +406,7 @@ export default function Admin() {
           site={
             sites.find((site) => site.id === preview.site.id) ?? preview.site
           }
+          interval={interval}
           initialGroup={preview.groupId}
           key={`${preview.site.id}-${preview.groupId ?? "overview"}`}
           close={() => setPreview(null)}

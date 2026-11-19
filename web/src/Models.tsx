@@ -11,15 +11,21 @@ import {
   useModelReference,
 } from "./ModelPrice";
 import { modelDisplayName } from "./model-display";
+import { indexModelPrices } from "./model-pricing";
+import { modelFreshness } from "./model-freshness";
 import type { Group } from "./types";
 
 export function Models({
   group,
   type,
+  catalogTime = null,
+  interval = 900,
   filter,
 }: {
   group: Group;
   type: string;
+  catalogTime?: string | null;
+  interval?: number;
   filter?: { query: string; onChange: (query: string) => void };
 }) {
   const [localQuery, setLocalQuery] = useState("");
@@ -27,10 +33,8 @@ export function Models({
   const setQuery = filter?.onChange ?? setLocalQuery;
   const [limit, setLimit] = useState(30);
   const reference = useModelReference();
-  const prices = useMemo(
-    () => new Map((group.prices ?? []).map((price) => [price.model, price])),
-    [group.prices],
-  );
+  const freshness = modelFreshness(group, catalogTime, interval);
+  const prices = useMemo(() => indexModelPrices(group.prices), [group.prices]);
   const matches = group.models.filter((model) =>
     `${model} ${modelDisplayName(model)}`
       .toLowerCase()
@@ -54,11 +58,18 @@ export function Models({
             </span>
           </h3>
           <p className="muted">
-            {group.description || "此分组当前公开的可用模型。"}
+            {group.description ||
+              "此分组已采集的模型列表，实际可用性请以站点为准。"}
           </p>
         </div>
         <span className="model-rate">{rateLabel(group)}</span>
       </div>
+      {freshness.stale && (
+        <p className="notice subtle" role="note">
+          模型列表较旧或时间未知，请向站点确认。
+          {freshness.oneTime && "分组同步不会刷新一次性模型快照。"}
+        </p>
+      )}
       <TextField
         aria-label={`搜索 ${group.name} 的模型`}
         className="search model-search"
@@ -105,11 +116,13 @@ export function Models({
                         <span className="model-name" title={model}>
                           {modelDisplayName(model)}
                         </span>
-                        <ModelPriceBadges
-                          model={model}
-                          site={price}
-                          match={match}
-                        />
+                        {price !== null && (
+                          <ModelPriceBadges
+                            model={model}
+                            site={price}
+                            match={match}
+                          />
+                        )}
                       </div>
                       {price &&
                         (price.cache_read != null ||
@@ -120,7 +133,13 @@ export function Models({
                           </small>
                         )}
                     </td>
-                    <ModelPriceCells site={price} match={match} />
+                    {price === null ? (
+                      <td colSpan={2} className="price-note">
+                        重复报价，无法确认单价
+                      </td>
+                    ) : (
+                      <ModelPriceCells site={price} match={match} />
+                    )}
                   </tr>
                 );
               })}
@@ -165,12 +184,12 @@ export function Models({
         未乘分组倍率；站点价已含倍率。
         {type === "newapi" && "动态结算以站点为准。"}
       </p>
-      {group.models_fetched_at && (
+      {(freshness.snapshotAt || freshness.oneTime) && (
         <p className="field-help model-time">
-          {group.models_source === "gateway_once"
-            ? "一次性网关快照 · "
-            : "模型发现于 "}
-          {new Date(group.models_fetched_at).toLocaleString("zh-CN")}
+          {freshness.oneTime ? "一次性网关快照 · " : "模型采集于 "}
+          {freshness.snapshotAt
+            ? new Date(freshness.snapshotAt).toLocaleString("zh-CN")
+            : "采集时间未知"}
         </p>
       )}
     </section>

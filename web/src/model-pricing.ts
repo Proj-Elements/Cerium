@@ -212,6 +212,16 @@ export function createPriceMatcher(catalog: ReferenceCatalog) {
 export const validPrice = (value: unknown): value is number =>
   typeof value === "number" && Number.isFinite(value) && value >= 0;
 
+/** Legacy snapshots may contain duplicates; null prevents either quote winning. */
+export function indexModelPrices(prices: Price[] = []) {
+  const result = new Map<string, Price | null>();
+  for (const price of prices) {
+    const model = price.model.trim();
+    result.set(model, result.has(model) ? null : price);
+  }
+  return result;
+}
+
 export function resolveModelPrice(
   site: Price | undefined,
   match?: ReferenceMatch,

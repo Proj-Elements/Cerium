@@ -218,7 +218,7 @@ export default function CatalogPage() {
               </span>
             </div>
           </div>
-          <ModelComparison sites={comparisonSites} />
+          <ModelComparison sites={comparisonSites} interval={data?.interval} />
           {error && (
             <div className="notice error" role="alert">
               <Glyph name="info" size={16} />
@@ -248,7 +248,7 @@ export default function CatalogPage() {
                 </div>
               ))}
             </div>
-          ) : !filtered.length ? (
+          ) : !data ? null : !filtered.length ? (
             <Empty
               title={sites.length ? "没有找到匹配站点" : "目录尚待点亮"}
               description={
@@ -292,6 +292,7 @@ export default function CatalogPage() {
       {selectedSite && (
         <SiteDetails
           site={selectedSite}
+          interval={data?.interval}
           key={selectedSite.id}
           close={() => navigate({ site: null })}
           navigation={{

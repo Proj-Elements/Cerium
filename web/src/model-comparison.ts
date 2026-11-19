@@ -1,4 +1,5 @@
-import { validPrice } from "./model-pricing.ts";
+import { indexModelPrices, validPrice } from "./model-pricing.ts";
+import { modelFreshness } from "./model-freshness.ts";
 import type { Site } from "./types";
 
 export type CostScenario = {
@@ -22,6 +23,9 @@ export type CostComparison = {
   request?: number;
   exchange?: number;
   snapshotAt: string | null;
+  modelsSnapshotAt: string | null;
+  modelsStale: boolean;
+  syncStale: boolean;
   stale: boolean;
 };
 
@@ -37,7 +41,12 @@ export function comparisonModels(sites: Site[]) {
   ].sort((left, right) => left.localeCompare(right));
 }
 
-export function compareModelCosts(sites: Site[], scenario: CostScenario) {
+export function compareModelCosts(
+  sites: Site[],
+  scenario: CostScenario,
+  interval = 900,
+  now = Date.now(),
+) {
   const validScenario =
     validPrice(scenario.inputTokens) &&
     validPrice(scenario.outputTokens) &&
@@ -50,18 +59,25 @@ export function compareModelCosts(sites: Site[], scenario: CostScenario) {
     if (!site.enabled) continue;
     for (const group of site.catalog?.groups ?? []) {
       if (!group.models.includes(scenario.model)) continue;
+      const models = modelFreshness(group, site.fetched_at, interval, now);
+      const syncStale = site.status !== "ok" && site.status !== "manual";
       const row: CostComparison = {
         siteId: site.id,
         siteName: site.name,
         groupId: group.id,
         groupName: group.name,
         snapshotAt: site.fetched_at,
-        stale: site.status !== "ok" && site.status !== "manual",
+        modelsSnapshotAt: models.snapshotAt,
+        modelsStale: models.stale,
+        syncStale,
+        stale: syncStale || models.stale,
       };
       rows.push(row);
-      const price = group.prices?.find(
-        (candidate) => candidate.model === scenario.model,
-      );
+      const price = indexModelPrices(group.prices).get(scenario.model);
+      if (price === null) {
+        row.reason = "重复报价，无法确认单价";
+        continue;
+      }
       if (!validScenario) {
         row.reason = "请填写有效且非零的用量";
         continue;

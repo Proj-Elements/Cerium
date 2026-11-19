@@ -245,6 +245,7 @@ export class Store {
         throw new HttpError(
           409,
           "Site changed since it was opened; load the latest version before saving",
+          "stale_revision",
         );
       const previous = old && JSON.parse(old.config),
         config = validateSite(input, previous);
@@ -275,6 +276,7 @@ export class Store {
         throw new HttpError(
           409,
           "This URL, provider and account or user ID already exist",
+          "duplicate_identity",
         );
       id ??= randomUUID();
       const revision = (old?.revision ?? 0) + 1;
@@ -350,20 +352,16 @@ export class Store {
         this.db.prepare("DELETE FROM catalog_changes WHERE site_id=?").run(id);
       const row = this.row(id);
       if (config.type === "others") {
-        this.recordChanges(
-          row,
-          config.manual_catalog,
-          new Date().toISOString(),
-        );
-        this.db
-          .prepare(
-            "UPDATE sites SET snapshot=?,fetched_at=?,error=NULL WHERE id=?",
-          )
-          .run(
-            JSON.stringify(config.manual_catalog),
-            new Date().toISOString(),
-            id,
-          );
+        const snapshot = JSON.stringify(config.manual_catalog);
+        if (row.snapshot !== snapshot) {
+          const checkedAt = new Date().toISOString();
+          this.recordChanges(row, config.manual_catalog, checkedAt);
+          this.db
+            .prepare(
+              "UPDATE sites SET snapshot=?,fetched_at=?,error=NULL WHERE id=?",
+            )
+            .run(snapshot, checkedAt, id);
+        }
         if (cleanupNeeded && syncChanged) this.enqueue(row, "delete");
       } else if (config.enabled && syncChanged) this.enqueue(row);
       return id;

@@ -97,7 +97,9 @@ export function validateBackup(input) {
       typeof entry.config.enabled !== "boolean"
     )
       fail("Invalid backup site visibility");
-    const config = site(entry.config),
+    const config = site(entry.config, undefined, {
+        allowDuplicatePrices: true,
+      }),
       identity = siteIdentity(config, entry.error);
     if (identity !== null && identities.has(identity))
       fail("Duplicate backup site identity");
@@ -108,6 +110,7 @@ export function validateBackup(input) {
         : catalog(
             entry.snapshot,
             config.type === "others" ? "manual" : "public",
+            { allowDuplicatePrices: true },
           );
     if (
       config.type === "others" &&

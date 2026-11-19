@@ -121,6 +121,8 @@ const upstream = createServer(async (req, res) => {
       },
     });
   }
+  if (path === "/api/v1/auth/me")
+    return reply({ code: 0, data: { run_mode: "standard", balance: 1 } });
   if (path === "/api/v1/groups/available")
     return reply({
       code: 0,

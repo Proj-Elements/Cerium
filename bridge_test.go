@@ -102,6 +102,8 @@ func TestBridgePersistenceRedeliveryAndDeletion(t *testing.T) {
 		case "/api/v1/auth/refresh":
 			refreshes++
 			reply(w, `{"code":0,"data":{"access_token":"rotated","refresh_token":"rotated-refresh"}}`)
+		case "/api/v1/auth/me":
+			reply(w, `{"code":0,"data":{"run_mode":"standard","balance":1}}`)
 		case "/api/v1/groups/available":
 			reply(w, `{"code":0,"data":[
 		{"id":1,"name":"public","rate_multiplier":2,"is_exclusive":false,"subscription_type":"standard"},

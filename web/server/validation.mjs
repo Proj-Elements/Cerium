@@ -1,7 +1,8 @@
 export class HttpError extends Error {
-  constructor(status, message) {
+  constructor(status, message, code) {
     super(message);
     this.status = status;
+    if (code) this.code = code;
   }
 }
 const fail = (message) => {
@@ -108,7 +109,11 @@ export function favicon(input, siteURL) {
     ...(input.checked_at !== undefined ? { checked_at: input.checked_at } : {}),
   };
 }
-export function catalog(input, scope = "public") {
+export function catalog(
+  input,
+  scope = "public",
+  { allowDuplicatePrices = false } = {},
+) {
   if (
     !input ||
     typeof input !== "object" ||
@@ -137,6 +142,7 @@ export function catalog(input, scope = "public") {
         (!Array.isArray(g.prices) || g.prices.length > 10000)
       )
         fail("Too many prices");
+      const priceIds = new Set();
       return {
         id,
         name: text(g.name, 200, true),
@@ -155,8 +161,12 @@ export function catalog(input, scope = "public") {
         prices: (g.prices ?? []).map((p) => {
           if (!p || typeof p !== "object" || Array.isArray(p))
             fail("Invalid model price");
+          const model = text(p.model, 300, true);
+          if (priceIds.has(model) && !allowDuplicatePrices)
+            fail("Duplicate model price");
+          priceIds.add(model);
           return {
-            model: text(p.model, 300, true),
+            model,
             mode: ["tokens", "request", "dynamic", "unknown"].includes(p.mode)
               ? p.mode
               : "unknown",
@@ -179,7 +189,7 @@ export function catalog(input, scope = "public") {
   }
   return normalized;
 }
-export function site(input, previous) {
+export function site(input, previous, catalogOptions) {
   if (!input || typeof input !== "object" || Array.isArray(input))
     fail("Invalid site");
   if (input.enabled !== undefined && typeof input.enabled !== "boolean")
@@ -271,6 +281,7 @@ export function site(input, previous) {
         ? catalog(
             { scope: "manual", groups: input.manual_catalog?.groups ?? [] },
             "manual",
+            catalogOptions,
           )
         : null,
   };

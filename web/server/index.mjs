@@ -100,6 +100,7 @@ export function createApp(options = {}) {
   });
   let timer,
     dataOperation = null,
+    drainingData = false,
     lastCallback = null,
     reconciliation;
   const activeMutations = new Set(),
@@ -118,12 +119,18 @@ export function createApp(options = {}) {
     if (dataOperation)
       throw new HttpError(409, "Another backup or restore is in progress");
     dataOperation = operation;
+    drainingData = true;
+    const resume = !dispatcher.paused;
     try {
-      if (operation === "recovery")
-        await Promise.allSettled([...activeMutations, ...activeIcons]);
+      await Promise.allSettled([reconciliation, dispatcher.pause()]);
+      // Allow in-flight deliveries to call back before closing write admission.
+      drainingData = false;
+      await Promise.allSettled([...activeMutations, ...activeIcons]);
       return await callback();
     } finally {
+      drainingData = false;
       dataOperation = null;
+      if (resume && !recovery.pending()) dispatcher.resume();
     }
   }
   log(
@@ -189,26 +196,27 @@ export function createApp(options = {}) {
     return key;
   }
   const server = createServer(async (req, res) => {
-    let recoveryRequest = false;
+    let dataRequest = false,
+      finishMutation;
     try {
       const pathname = new URL(req.url, "http://localhost").pathname;
-      recoveryRequest = [
+      dataRequest = [
+        `${base}/data/export`,
+        `${base}/data/import`,
         `${base}/data/recovery/export`,
         `${base}/data/recovery/import`,
       ].includes(pathname);
     } catch {}
-    if (req.method !== "GET" && !recoveryRequest) {
+    if (req.method !== "GET" && !dataRequest) {
       let finish;
       const complete = new Promise((resolve) => {
         finish = resolve;
       });
       activeMutations.add(complete);
-      const done = () => {
+      finishMutation = () => {
         activeMutations.delete(complete);
         finish();
       };
-      res.once("finish", done);
-      res.once("close", done);
     }
     const requestId = randomUUID();
     let stage = "request";
@@ -326,10 +334,10 @@ export function createApp(options = {}) {
       }
       const iconMatch = path.match(/^\/api\/sites\/([\da-f-]{36})\/icon$/);
       if (iconMatch && method === "GET") {
-        if (dataOperation === "recovery" || recovery.pending())
+        if (dataOperation || recovery.pending())
           throw new HttpError(
             503,
-            "Icon discovery is paused during disaster recovery",
+            "Icon discovery is paused during backup or restore",
           );
         const work = resolveIcon(iconMatch[1]);
         activeIcons.add(work);
@@ -341,10 +349,10 @@ export function createApp(options = {}) {
       }
       if (path === "/api/webhooks/sync" && method === "POST") {
         stage = "callback";
-        if (dataOperation === "recovery" || recovery.pending())
+        if ((dataOperation && !drainingData) || recovery.pending())
           throw new HttpError(
             503,
-            "Callback delivery is paused during disaster recovery; retry delivery",
+            "Callback delivery is paused during backup or restore; retry delivery",
           );
         const raw = await body(req, 8 << 20),
           timestamp = req.headers["x-cerium-timestamp"];
@@ -397,12 +405,12 @@ export function createApp(options = {}) {
         const key = session(req);
         if (
           method !== "GET" &&
-          (dataOperation === "recovery" || recovery.pending()) &&
-          path !== `${base}/data/recovery/import`
+          (dataOperation ||
+            (recovery.pending() && path !== `${base}/data/recovery/import`))
         )
           throw new HttpError(
             409,
-            "Disaster recovery is in progress; retry this change afterward",
+            "Backup or restore is in progress; retry this change afterward",
           );
         if (path === `${base}/logout` && method === "POST") {
           sessions.delete(key);
@@ -632,13 +640,15 @@ export function createApp(options = {}) {
           ...detail,
         });
       else res.end();
+    } finally {
+      finishMutation?.();
     }
   });
   server.requestTimeout = 30000;
   server.headersTimeout = 10000;
   if (options.dispatch !== false) {
     const dispatch = () => {
-      if (dataOperation === "recovery") return;
+      if (dataOperation) return;
       if (recovery.pending()) {
         reconciliation = recovery.reconcile().catch((error) =>
           log(

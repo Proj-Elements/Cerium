@@ -60,6 +60,21 @@ test("published effective prices are weighted by usage and recharge conversion w
   assert.equal(inputHeavy[0].cost, 14);
 });
 
+test("legacy duplicate quotes cannot enter the cost ranking in either order", () => {
+  const prices = [
+    { model, mode: "tokens", input: 1, output: 1 },
+    { model, mode: "tokens", input: 100, output: 100 },
+  ];
+  for (const quotes of [prices, [...prices].reverse()]) {
+    const rows = compareModelCosts(
+      [site("duplicates", undefined, {}, { prices: quotes })],
+      scenario,
+    );
+    assert.equal(rows[0].cost, undefined);
+    assert.match(rows[0].reason, /重复报价/);
+  }
+});
+
 test("dynamic, missing price, missing exchange and billing-unit differences remain explicit", () => {
   const rows = compareModelCosts(
     [
@@ -180,5 +195,85 @@ test("invalid or overflowing usage cannot silently become zero and stale snapsho
       { ...scenario, inputTokens: Number.MAX_VALUE },
     )[0].cost,
     undefined,
+  );
+});
+
+test("current pricing cannot make an older one-time model snapshot fresh", () => {
+  const now = Date.parse("2026-11-14T03:00:00Z");
+  const rows = compareModelCosts(
+    [
+      site(
+        "old-models",
+        { mode: "tokens", input: 1, output: 2 },
+        {
+          fetched_at: new Date(now).toISOString(),
+        },
+        {
+          models_source: "gateway_once",
+          models_fetched_at: "2020-01-01T00:00:00Z",
+        },
+      ),
+      site(
+        "recent-models",
+        { mode: "tokens", input: 1, output: 2 },
+        {
+          fetched_at: new Date(now).toISOString(),
+        },
+        {
+          models_source: "gateway_once",
+          models_fetched_at: new Date(now - 60000).toISOString(),
+        },
+      ),
+      site(
+        "undated-models",
+        undefined,
+        { fetched_at: new Date(now).toISOString() },
+        {
+          models_source: "gateway_once",
+        },
+      ),
+    ],
+    scenario,
+    900,
+    now,
+  );
+  const old = rows.find((row) => row.siteId === "old-models");
+  assert.equal(old.stale, true);
+  assert.equal(old.modelsStale, true);
+  assert.equal(old.modelsSnapshotAt, "2020-01-01T00:00:00Z");
+  assert.equal(old.snapshotAt, new Date(now).toISOString());
+  assert.equal(rows.find((row) => row.siteId === "recent-models").stale, false);
+  assert.equal(
+    rows.find((row) => row.siteId === "undated-models").modelsStale,
+    true,
+  );
+});
+
+test("model freshness respects the configured sync interval and current time", () => {
+  const now = Date.parse("2026-11-14T03:00:00Z");
+  const sites = [
+    site(
+      "models",
+      { mode: "tokens", input: 1, output: 2 },
+      {
+        fetched_at: new Date(now).toISOString(),
+      },
+      {
+        models_source: "gateway_once",
+        models_fetched_at: new Date(now - 3600000).toISOString(),
+      },
+    ),
+  ];
+  assert.equal(
+    compareModelCosts(sites, scenario, 900, now)[0].modelsStale,
+    true,
+  );
+  assert.equal(
+    compareModelCosts(sites, scenario, 3600, now)[0].modelsStale,
+    false,
+  );
+  assert.equal(
+    compareModelCosts(sites, scenario, 3600, now + 3 * 3600000)[0].modelsStale,
+    true,
   );
 });
